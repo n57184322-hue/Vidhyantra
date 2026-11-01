@@ -164,6 +164,25 @@ class HideAdminFromNonStaffMiddleware:
         return self.get_response(request)
 
 
+class RememberMeMiddleware:
+    """Logs a visitor whose session was lost back in from their "stay
+    signed in" cookie, and writes or clears that cookie on the way out (see
+    myapp.remember). Sits after AuthenticationMiddleware and before
+    SingleDeviceSessionMiddleware."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from myapp import remember
+        if not request.user.is_authenticated and not request.path.startswith(remember.SKIP_PREFIXES):
+            remember.restore(request)
+        response = self.get_response(request)
+        if not request.path.startswith(remember.SKIP_PREFIXES):
+            remember.ensure(request)
+        return remember.write_cookie(request, response)
+
+
 class SingleDeviceSessionMiddleware:
     """Keeps each logged-in browser listed as one of its account's devices
     (see myapp.devices). A device logged out from elsewhere has lost its

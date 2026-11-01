@@ -71,6 +71,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'myapp.middleware.RememberMeMiddleware',
     'myapp.middleware.SingleDeviceSessionMiddleware',
     'myapp.middleware.HideAdminFromNonStaffMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',

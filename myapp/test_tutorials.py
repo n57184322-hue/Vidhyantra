@@ -1,5 +1,6 @@
 """Video tutorials: staff upload in pieces on the dashboard, logged-in users
 watch in the AI page's pop-up, and nobody gets the file as a download."""
+import io
 import tempfile
 import time
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from PIL import Image
 
 from myapp import tutorials
 from myapp.models import TutorialVideo
@@ -83,6 +85,44 @@ class UploadTests(TutorialTestCase):
         })
         self.assertEqual(big.status_code, 400)
         self.assertIn('720p', big.json()['detail'])
+
+    def test_a_picture_is_uploaded_as_a_picture_tutorial_with_a_server_made_cover(self):
+        out = io.BytesIO()
+        Image.new('RGB', (900, 1600), (30, 120, 90)).save(out, 'PNG')
+        picture = self.upload('Where to find settings', content=out.getvalue(), name='steps.png')
+        self.assertEqual(picture.kind, TutorialVideo.KIND_IMAGE)
+        self.assertEqual(picture.status, TutorialVideo.STATUS_READY)
+        self.assertTrue(picture.poster.startswith('data:image/jpeg;base64,'))
+        self.assertNotEqual(picture.poster, 'data:image/jpeg;base64,AAAA')  # never the cover the page sent
+        self.assertEqual(picture.duration_seconds, 0)
+        self.client.force_login(self.member)
+        item = self.client.get('/AI/api/tutorials/').json()['videos'][0]
+        self.assertEqual(item['kind'], 'image')
+        served = self.client.get(item['src'])
+        served.close()
+        self.assertEqual(served['Content-Type'], 'image/png')
+
+    def test_a_file_named_like_a_picture_that_is_not_one_is_refused(self):
+        self.client.force_login(self.staff)
+        pk = self.client.post('/store/dashboard/tutorials/upload/start/', {
+            'title': 'T', 'name': 'fake.jpg', 'size': len(VIDEO),
+        }).json()['id']
+        for offset in range(0, len(VIDEO), 2048):
+            self.client.post(f'/store/dashboard/tutorials/{pk}/upload/chunk/', {
+                'offset': offset, 'chunk': SimpleUploadedFile('c', VIDEO[offset:offset + 2048]),
+            })
+        finish = self.client.post(f'/store/dashboard/tutorials/{pk}/upload/finish/')
+        self.assertEqual(finish.status_code, 400)
+        self.assertIn('not a picture', finish.json()['detail'])
+        self.assertFalse(TutorialVideo.objects.exists())
+
+    def test_a_picture_over_its_own_limit_is_refused(self):
+        self.client.force_login(self.staff)
+        big = self.client.post('/store/dashboard/tutorials/upload/start/', {
+            'title': 'T', 'name': 'big.png', 'size': tutorials.MAX_IMAGE_BYTES + 1,
+        })
+        self.assertEqual(big.status_code, 400)
+        self.assertIn('picture', big.json()['detail'])
 
     def test_members_cannot_upload(self):
         self.client.force_login(self.member)
@@ -172,3 +212,5 @@ class DashboardPageTests(TutorialTestCase):
         response = self.client.get('/')
         self.assertContains(response, 'id="tutorialsMenuBtn"')
         self.assertContains(response, 'controlslist="nodownload')
+        self.assertContains(response, 'id="tutViewer"')
+        self.assertContains(response, 'id="tutImage"')

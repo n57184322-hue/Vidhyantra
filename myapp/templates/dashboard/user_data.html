@@ -1,4 +1,5 @@
 {% extends "dashboard/base.html" %}
+{% load humanize %}
 {% block title %}User Data{% endblock %}
 {% block page_title %}User Data{% endblock %}
 
@@ -13,6 +14,18 @@
 .badge.loc-unknown{background:var(--bg-alt);color:var(--text)}
 .geo-banner{display:flex;align-items:center;gap:.9rem;flex-wrap:wrap;background:#eef2ff;color:#3b5bdb;border-radius:12px;padding:.85rem 1.1rem;font-size:.85rem;font-weight:600;margin-bottom:1.2rem}
 .geo-banner .btn{white-space:nowrap}
+.badge.plan-paid{background:#e8fbf0;color:#1da851}
+.badge.plan-expiring{background:#fff4e0;color:#c77700}
+.badge.plan-free{background:var(--bg-alt);color:var(--text)}
+.verified{color:#1da851;font-size:.75rem}
+.clear-filters{font-size:.8rem;font-weight:700;color:var(--red);text-decoration:none;white-space:nowrap}
+.clear-filters:hover{text-decoration:underline}
+td.num{font-variant-numeric:tabular-nums}
+td.nowrap,td.nowrap .sub-line{white-space:nowrap}
+.stat-grid{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+@media (max-width:700px){.stat-grid{grid-template-columns:1fr 1fr;gap:.7rem}.stat-grid .stat-card{padding:.9rem .8rem}}
+.view-chats{display:inline-flex;align-items:center;gap:.3rem;margin-top:.35rem;font-size:.78rem;font-weight:700;color:var(--red);text-decoration:none;white-space:nowrap}
+.view-chats:hover{text-decoration:underline}
 </style>
 {% endblock %}
 
@@ -25,17 +38,20 @@
 {% endif %}
 <div class="stat-grid">
   <div class="stat-card"><div class="stat-ico"><i class="fas fa-users"></i></div><div><div class="stat-num">{{ total_users }}</div><div class="stat-lbl">Customers</div></div></div>
+  <a class="stat-card{% if activity_filter == 'week' %} active{% endif %}" href="?active=week"><div class="stat-ico"><i class="fas fa-bolt"></i></div><div><div class="stat-num">{{ active_last_7_days }}</div><div class="stat-lbl">Active in last 7 days</div></div></a>
+  <a class="stat-card{% if subscription_filter == 'subscribed' %} active{% endif %}" href="?subscription=subscribed"><div class="stat-ico"><i class="fas fa-crown"></i></div><div><div class="stat-num">{{ total_subscribed }}</div><div class="stat-lbl">AI subscribers</div></div></a>
   <div class="stat-card"><div class="stat-ico"><i class="fas fa-comments"></i></div><div><div class="stat-num">{{ total_chats }}</div><div class="stat-lbl">Chats created</div></div></div>
+  <div class="stat-card"><div class="stat-ico"><i class="fas fa-message"></i></div><div><div class="stat-num">{{ total_messages }}</div><div class="stat-lbl">Messages sent</div></div></div>
   <div class="stat-card"><div class="stat-ico"><i class="fas fa-right-to-bracket"></i></div><div><div class="stat-num">{{ total_logins }}</div><div class="stat-lbl">Recorded logins</div></div></div>
 </div>
 
 <div class="panel">
   <div class="panel-head">
-    <h3>{{ users|length }} user{{ users|length|pluralize }}</h3>
+    <h3>{% if filters_applied %}{{ users|length }} of {{ total_users }} users{% else %}{{ users|length }} user{{ users|length|pluralize }}{% endif %}</h3>
     <form class="panel-filters" method="get">
       <span class="panel-search">
         <i class="fas fa-magnifying-glass"></i>
-        <input type="search" name="q" value="{{ q }}" placeholder="Search name or location…">
+        <input type="search" name="q" value="{{ q }}" placeholder="Search name, email, phone or location…">
       </span>
       <select name="when" onchange="this.form.submit()" aria-label="Filter by joined date">
         <option value="all" {% if date_filter == 'all' %}selected{% endif %}>All time</option>
@@ -53,26 +69,52 @@
       <select name="subscription" onchange="this.form.submit()" aria-label="Filter by AI subscription">
         <option value="all" {% if subscription_filter == 'all' %}selected{% endif %}>Any plan</option>
         <option value="subscribed" {% if subscription_filter == 'subscribed' %}selected{% endif %}>AI subscribed</option>
+        <option value="expiring" {% if subscription_filter == 'expiring' %}selected{% endif %}>Plan ends within 7 days</option>
         <option value="free" {% if subscription_filter == 'free' %}selected{% endif %}>Free tier</option>
+        <option value="paid" {% if subscription_filter == 'paid' %}selected{% endif %}>Has paid</option>
+      </select>
+      <select name="active" onchange="this.form.submit()" aria-label="Filter by activity">
+        <option value="all" {% if activity_filter == 'all' %}selected{% endif %}>Any activity</option>
+        <option value="today" {% if activity_filter == 'today' %}selected{% endif %}>Active today</option>
+        <option value="week" {% if activity_filter == 'week' %}selected{% endif %}>Active last 7 days</option>
+        <option value="inactive" {% if activity_filter == 'inactive' %}selected{% endif %}>Inactive 30+ days</option>
+        <option value="never_chatted" {% if activity_filter == 'never_chatted' %}selected{% endif %}>Never chatted</option>
+        <option value="never_logged_in" {% if activity_filter == 'never_logged_in' %}selected{% endif %}>Never logged in</option>
+      </select>
+      <select name="phone" onchange="this.form.submit()" aria-label="Filter by phone">
+        <option value="all" {% if phone_filter == 'all' %}selected{% endif %}>Any phone</option>
+        <option value="verified" {% if phone_filter == 'verified' %}selected{% endif %}>Phone verified</option>
+        <option value="unverified" {% if phone_filter == 'unverified' %}selected{% endif %}>Phone not verified</option>
+        <option value="none" {% if phone_filter == 'none' %}selected{% endif %}>No phone</option>
       </select>
       <select name="sort" onchange="this.form.submit()" aria-label="Sort by">
         <option value="newest" {% if sort == 'newest' %}selected{% endif %}>Newest first</option>
         <option value="oldest" {% if sort == 'oldest' %}selected{% endif %}>Oldest first</option>
+        <option value="recently_active" {% if sort == 'recently_active' %}selected{% endif %}>Recently active</option>
         <option value="most_chats" {% if sort == 'most_chats' %}selected{% endif %}>Most chats</option>
+        <option value="most_messages" {% if sort == 'most_messages' %}selected{% endif %}>Most messages</option>
         <option value="most_logins" {% if sort == 'most_logins' %}selected{% endif %}>Most logins</option>
+        <option value="name" {% if sort == 'name' %}selected{% endif %}>Name A–Z</option>
       </select>
+      {% if filters_applied %}<a class="clear-filters" href="?"><i class="fas fa-xmark"></i> Clear filters</a>{% endif %}
     </form>
   </div>
   <div class="table-scroll">
     <table>
       <thead>
-        <tr><th>User name</th><th>Email</th><th>Location</th><th>Chats done</th><th>Times logged in</th><th></th></tr>
+        <tr><th>User name</th><th>Joined</th><th>Last active</th><th>Location</th><th>Plan</th><th>Chats done</th><th>Messages</th><th>Logins</th></tr>
       </thead>
       <tbody>
         {% for u in users %}
         <tr>
-          <td><strong>{{ u.get_full_name|default:u.username }}</strong></td>
-          <td>{{ u.email|default:"—" }}</td>
+          <td>
+            <strong>{{ u.get_full_name|default:u.username }}</strong>
+            <span class="sub-line">{{ u.email|default:"No email" }}</span>
+            {% if u.store_profile.phone %}<span class="sub-line">{{ u.store_profile.phone }}{% if u.store_profile.phone_verified %} <i class="fas fa-circle-check verified" title="Phone verified"></i>{% endif %}</span>{% endif %}
+            <a class="view-chats" href="{% url 'dashboard_ai_activity' %}?q={{ u.email|urlencode }}"><i class="fas fa-comments"></i> View chats</a>
+          </td>
+          <td class="nowrap">{{ u.date_joined|date:"d M Y" }}<span class="sub-line">{{ u.date_joined|date:"g:i A" }}</span></td>
+          <td class="nowrap">{% if u.last_chat_at or u.last_login %}{{ u.last_active|naturaltime }}{% else %}<span class="sub-line">Never</span>{% endif %}</td>
           <td>
             {% if u.store_profile.location_consent == 'granted' %}
               <span class="badge loc-enabled">Enabled</span>
@@ -83,13 +125,27 @@
             {% else %}
               <span class="badge loc-unknown">Not asked</span>
             {% endif %}
+            {% if u.store_profile.ai_location %}<div class="sub-line" title="Told the AI chat">Said: {{ u.store_profile.ai_location }}</div>{% endif %}
+            {% if u.store_profile.ai_instagram_handle %}<div class="sub-line">@{{ u.store_profile.ai_instagram_handle }}</div>{% endif %}
           </td>
-          <td>{{ u.chat_count }}</td>
-          <td>{{ u.store_profile.login_count|default:0 }}</td>
-          <td><a class="btn btn-ghost btn-sm" href="{% url 'dashboard_ai_activity' %}?q={{ u.email|urlencode }}"><i class="fas fa-comments"></i> View chats</a></td>
+          <td class="nowrap">
+            {% with until=u.store_profile.ai_subscription_until %}
+            {% if until and until > now %}
+              {% if until <= ends_soon %}<span class="badge plan-expiring">Ends soon</span>{% else %}<span class="badge plan-paid">Subscribed</span>{% endif %}
+              <span class="sub-line">until {{ until|date:"d M Y" }}</span>
+            {% else %}
+              <span class="badge plan-free">Free</span>
+              <span class="sub-line">{{ u.store_profile.ai_free_messages_used|default:0 }} free message{{ u.store_profile.ai_free_messages_used|default:0|pluralize }} used</span>
+            {% endif %}
+            {% if u.store_profile.manual_amount_paid %}<span class="sub-line">Paid ₹{{ u.store_profile.manual_amount_paid|floatformat:2 }}</span>{% endif %}
+            {% endwith %}
+          </td>
+          <td class="num">{{ u.chat_count }}</td>
+          <td class="num">{{ u.message_count }}</td>
+          <td class="num">{{ u.store_profile.login_count|default:0 }}</td>
         </tr>
         {% empty %}
-        <tr><td colspan="6" class="empty-row">No users match these filters</td></tr>
+        <tr><td colspan="8" class="empty-row">No users match these filters</td></tr>
         {% endfor %}
       </tbody>
     </table>

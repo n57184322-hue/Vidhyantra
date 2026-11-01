@@ -127,5 +127,7 @@ def keep_only_this_device(user, old_key, new_key):
     others = list(ActiveUserSession.objects.filter(user=user).exclude(session_key__in=[old_key, new_key]))
     ActiveUserSession.objects.filter(pk__in=[d.pk for d in others]).delete()
     Session.objects.filter(session_key__in=[d.session_key for d in others]).delete()
+    if old_key != new_key and not ActiveUserSession.objects.filter(session_key=new_key).exists():
+        ActiveUserSession.objects.filter(user=user, session_key=old_key).update(session_key=new_key)
     if old_key and old_key != new_key:
         ActiveUserSession.objects.filter(user=user, session_key=old_key).update(session_key=new_key)

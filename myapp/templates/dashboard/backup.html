@@ -76,6 +76,18 @@
 .dbx-folder-form{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.5rem}
 .dbx-folder-form input{flex:1 1 10rem;min-width:0;padding:.4rem .6rem;border:1px solid var(--line);border-radius:8px;font-size:.85rem}
 .dbx-folder-form .btn{padding:.4rem .8rem;font-size:.82rem}
+.dbx-browse{margin-top:.6rem;border:1px solid var(--line);border-radius:10px;padding:.65rem .7rem;background:var(--bg-alt)}
+.dbx-browse[hidden]{display:none}
+.dbx-browse-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem;font-size:.78rem;font-weight:700;color:var(--head);margin-bottom:.5rem}
+.dbx-browse-list{display:flex;flex-wrap:wrap;gap:.4rem}
+.dbx-chip{display:inline-flex;align-items:center;gap:.35rem;border:1px solid var(--line);background:#fff;border-radius:50px;padding:.3rem .7rem;font:inherit;font-size:.78rem;font-weight:600;color:var(--head);cursor:pointer}
+.dbx-chip:hover:not(:disabled){border-color:var(--red);color:var(--red)}
+.dbx-chip.is-picked{border-color:var(--red);background:var(--red);color:#fff}
+.dbx-chip.is-current{border-color:#1da851}
+.dbx-chip small{font-size:.66rem;font-weight:700;color:#1da851}
+.dbx-chip.is-picked small{color:#fff}
+.dbx-chip:disabled{opacity:.55;cursor:not-allowed}
+.dbx-browse-note{font-size:.72rem;color:var(--text);margin-top:.5rem;line-height:1.45}
 .dbx-note{font-size:.74rem;color:#9aa3b0;margin-top:.9rem;line-height:1.5}
 .dbx-steps{margin:0 0 1.1rem;padding:.8rem 1rem .8rem 2rem;background:#f3f6ff;border:1px solid #d7e0ff;border-radius:12px;font-size:.8rem;line-height:1.55;color:var(--text)}
 .dbx-steps li{margin:.15rem 0}
@@ -141,11 +153,17 @@ a.btn[aria-disabled="true"]{opacity:.5;pointer-events:none}
         <li><i class="fas fa-folder-open"></i> <span>Dropbox folder: <b>{{ dropbox_root }}/</b>
           <span class="dbx-tree">{% for sub in dropbox_subfolders %}<code>{{ sub }}/</code>{% endfor %}</span>
           <small class="dbx-tree-note">{% if settings_obj.dropbox_folder %}A folder name you chose. Clear the box to name it after the AI again.{% else %}Named after the AI name on the Customize page. Renaming the AI moves the folder too.{% endif %}</small>
-          <form method="post" action="{% url 'dashboard_backup_settings' %}" class="dbx-folder-form">
+          <form method="post" action="{% url 'dashboard_backup_settings' %}" class="dbx-folder-form" id="dbxFolderForm" data-current="{{ dropbox_root|slice:'1:' }}">
             {% csrf_token %}<input type="hidden" name="action" value="folder">
-            <input type="text" name="dropbox_folder" value="{{ settings_obj.dropbox_folder }}" placeholder="{{ dropbox_brand }}" maxlength="40" pattern="[A-Za-z0-9 _\-]*" title="Letters, numbers, spaces or dashes" aria-label="Dropbox folder name" spellcheck="false" autocomplete="off">
-            <button type="submit" class="btn btn-ghost" onclick="return confirm('Move everything in Dropbox to this folder name?');"><i class="fas fa-pen"></i> Change folder</button>
-          </form></span></li>
+            <input type="text" name="dropbox_folder" id="dbxFolderInput" value="{{ settings_obj.dropbox_folder }}" placeholder="{{ dropbox_brand }}" maxlength="40" pattern="[A-Za-z0-9 _\-]*" title="Letters, numbers, spaces or dashes" aria-label="Dropbox folder name" spellcheck="false" autocomplete="off">
+            {% if connected %}<button type="button" class="btn btn-ghost" id="dbxBrowseBtn" data-url="{% url 'dashboard_backup_folders' %}"><i class="fas fa-folder-tree"></i> Browse folders</button>{% endif %}
+            <button type="submit" class="btn btn-ghost"><i class="fas fa-pen"></i> Change folder</button>
+          </form>
+          <div class="dbx-browse" id="dbxBrowse" hidden>
+            <div class="dbx-browse-head"><span>Folders in your Dropbox</span><button type="button" class="btn btn-ghost" id="dbxBrowseClose" style="padding:.2rem .55rem;font-size:.72rem">Close</button></div>
+            <div class="dbx-browse-list" id="dbxBrowseList"></div>
+            <p class="dbx-browse-note">Click a folder to fill in its name, then press <b>Change folder</b>. Choosing a folder that already exists moves this site's backups into it; the AI images stay where they are. Folders whose names have spaces or symbols can't be used — the site only uses letters, numbers and dashes.</p>
+          </div></span></li>
         <li><i class="fas fa-images"></i> <span>AI images in Dropbox: <b>{{ image_summary.in_dropbox }}</b>{% if image_summary.waiting %} · {{ image_summary.waiting }} uploading{% endif %}{% if image_summary.older %} · {{ image_summary.older }} older ones being moved{% endif %}
           <small class="dbx-tree-note">Saved as compressed WebP. People see and download them from this site; Dropbox links are never shown.</small></span></li>
         {% if connected and account.allocated and account.used is not None %}
@@ -216,6 +234,61 @@ a.btn[aria-disabled="true"]{opacity:.5;pointer-events:none}
     else { codeLink.removeAttribute('href'); codeLink.setAttribute('aria-disabled', 'true'); }
   }
   keyInput.addEventListener('input', syncCodeLink);
+})();
+// "Browse folders": pick an existing Dropbox folder instead of typing its name.
+(function(){
+  var form = document.getElementById('dbxFolderForm');
+  var input = document.getElementById('dbxFolderInput');
+  var browseBtn = document.getElementById('dbxBrowseBtn');
+  var box = document.getElementById('dbxBrowse');
+  var list = document.getElementById('dbxBrowseList');
+  if (!form || !input) return;
+  var known = [];
+  function esc(text){ var d = document.createElement('div'); d.textContent = text; return d.innerHTML; }
+  function render(){
+    var typed = input.value.trim().toLowerCase();
+    if (!known.length) { list.innerHTML = '<span class="dbx-browse-note">No folders in this Dropbox yet.</span>'; return; }
+    list.innerHTML = known.map(function(folder){
+      var classes = 'dbx-chip' + (folder.current ? ' is-current' : '') + (typed && folder.name.toLowerCase() === typed ? ' is-picked' : '');
+      return '<button type="button" class="' + classes + '" data-folder="' + esc(folder.name) + '"' +
+        (folder.usable ? '' : ' disabled title="Has spaces or symbols, so it can’t be used"') + '>' +
+        '<i class="fas fa-folder"></i> ' + esc(folder.name) + (folder.current ? ' <small>in use</small>' : '') + '</button>';
+    }).join('');
+  }
+  if (browseBtn) {
+    browseBtn.addEventListener('click', function(){
+      box.hidden = false;
+      list.innerHTML = '<span class="dbx-browse-note"><i class="fas fa-spinner fa-spin"></i> Loading folders…</span>';
+      fetch(browseBtn.getAttribute('data-url'), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+        .then(function(response){ return response.json().then(function(body){ return { ok: response.ok, body: body }; }); })
+        .then(function(result){
+          if (!result.ok) throw new Error(result.body.detail || 'Could not load the folders.');
+          known = result.body.folders || [];
+          render();
+        })
+        .catch(function(error){ list.innerHTML = '<span class="dbx-browse-note">' + esc(error.message) + '</span>'; });
+    });
+    document.getElementById('dbxBrowseClose').addEventListener('click', function(){ box.hidden = true; });
+    list.addEventListener('click', function(e){
+      var chip = e.target.closest('[data-folder]');
+      if (!chip || chip.disabled) return;
+      input.value = chip.getAttribute('data-folder');
+      render();
+      input.focus();
+    });
+    input.addEventListener('input', render);
+  }
+  // Say plainly what Change folder will do with the chosen name.
+  form.addEventListener('submit', function(e){
+    var name = input.value.trim() || input.placeholder;
+    var current = (form.getAttribute('data-current') || '').toLowerCase();
+    if (name.toLowerCase() === current) return;
+    var exists = known.some(function(folder){ return folder.name.toLowerCase() === name.toLowerCase(); });
+    var message = exists
+      ? 'The folder "' + name + '" already exists in Dropbox. This site’s backups will be moved into it and new backups and images will be saved there; the AI images already saved stay in "' + form.getAttribute('data-current') + '". Continue?'
+      : 'Move everything in Dropbox to the folder "' + name + '"?';
+    if (!confirm(message)) e.preventDefault();
+  });
 })();
 document.querySelectorAll('[data-reveal]').forEach(function(button){
   button.addEventListener('click', function(){

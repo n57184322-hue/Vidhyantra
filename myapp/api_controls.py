@@ -7,17 +7,19 @@ State lives in two places that the rest of the app already reads:
 ProviderAPICredential (the key, via myapp.provider_keys) and AIModelControl
 (on/off, counters, name/description, last test, via myapp.model_controls).
 """
-from myapp import ai_chat, coding_api, model_controls
+from myapp import ai_chat, code_runner, coding_api, model_controls
 from myapp.provider_keys import get_key, invalidate
 
 KIND_TEXT = 'text'
 KIND_IMAGE = 'image'
 KIND_SEARCH = 'search'
+KIND_RUN = 'run'
 
 _ENABLE_TEXT = {
     KIND_TEXT: 'show {label} in the model picker and let it answer requests',
     KIND_IMAGE: 'allow image generation (image requests from every model)',
     KIND_SEARCH: 'let the AI use live web search for current-information questions',
+    KIND_RUN: "show a Run button for Java and the other languages listed above in the chat's code editor",
 }
 
 
@@ -52,6 +54,13 @@ def definitions():
         {'id': 'search', 'kind': KIND_SEARCH, 'model_key': SEARCH_CONTROL_KEY,
          'title': 'Web Search (Tavily)', 'note': 'Live results the AI can pull into its replies.',
          'keys': [('TAVILY_API_KEY', 'Tavily API key (tvly-…)')]},
+        {'id': 'coderun', 'kind': KIND_RUN, 'model_key': code_runner.CONTROL_KEY,
+         'title': 'Code runner (Java, C, C++ and more)',
+         'note': "Runs Java, C, C++, C#, Go, Kotlin, PHP, Ruby and Rust from the chat's code editor, on Judge0's "
+                 'servers — never on this one. To get a free key: sign up at rapidapi.com, open "Judge0 CE", '
+                 'subscribe to the free Basic plan and copy your X-RapidAPI-Key. Python, HTML and JavaScript run '
+                 "in the visitor's own browser and need no key.",
+         'keys': [(code_runner.API_KEY_SETTING, 'Judge0 CE key from RapidAPI (X-RapidAPI-Key)')]},
     ] + _custom_definitions()
 
 
@@ -185,6 +194,8 @@ def run_test(defn):
     kind = defn['kind']
     if defn['id'] == 'coding':
         return coding_api.test_connection()
+    if kind == KIND_RUN:
+        return code_runner.test_connection()
     if kind == KIND_TEXT:
         return ai_chat.test_model_connection(defn.get('test_model') or defn['model_key'])
     if kind == KIND_IMAGE:

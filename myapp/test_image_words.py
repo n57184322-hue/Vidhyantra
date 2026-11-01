@@ -149,6 +149,28 @@ class ThroughTheChatTests(TestCase):
         generate.assert_not_called()
         self.assertTrue(StoredImage.objects.exists())
 
+    def test_a_busy_background_is_drawn_on_white_and_then_cut_out(self):
+        # A photo can't be cut out directly, and the image model paints a fake
+        # checkerboard for "transparent" — so it is asked for plain white,
+        # and the white is cut away, leaving a truly transparent picture.
+        noisy = Image.effect_noise((512, 512), 80).convert('RGB')
+        drawn = image_generation.GeneratedImage(png(logo_on((255, 255, 255))), 'png')
+        redrawn = image_edit.Redrawn(image=drawn, brief='A ring logo.', change='Removed the leaves.')
+        with patch('myapp.views.image_ocr.extract_data_uri', return_value=''), \
+                patch.object(image_generation, 'generate_image',
+                             side_effect=image_generation.ImageGenerationError('no edits', status_code=503, editing_unavailable=True)), \
+                patch.object(image_edit, 'redraw', return_value=redrawn) as redraw:
+            response = self._send({'message': 'Remove the background of this image completely.',
+                                   'image': as_data_uri(png(noisy)), 'model': ai_chat.SOL_MODEL_KEY})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn('plain, solid pure white background', redraw.call_args.args[1])
+        self.assertIn('now transparent', response.content.decode())
+        from django.core.files.storage import default_storage
+        stored = StoredImage.objects.get()
+        with default_storage.open(stored.local_name) as handle, Image.open(io.BytesIO(handle.read())) as saved:
+            self.assertIn(saved.mode, ('RGBA', 'LA', 'PA'))
+            self.assertEqual(saved.getpixel((2, 2))[-1], 0)
+
     def test_a_logo_request_gets_its_name_lettered(self):
         art = image_generation.GeneratedImage(png(logo_on((255, 255, 255))), 'png')
         with patch.object(image_generation, 'generate_image', return_value=art) as generate:

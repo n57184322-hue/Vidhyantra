@@ -339,7 +339,7 @@ class SiteCustomizationForm(forms.ModelForm):
         model = SiteCustomization
         fields = [
             'favicon', 'ai_brand_name', 'social_preview_title', 'social_preview_description',
-            'social_preview_image', 'support_whatsapp_number', 'support_email',
+            'social_preview_image', 'support_whatsapp_number', 'support_email', 'support_hours',
             'youtube_cookies_txt', 'site_disabled',
         ]
         widgets = {
@@ -355,6 +355,9 @@ class SiteCustomizationForm(forms.ModelForm):
 
     def clean_youtube_cookies_txt(self):
         return self.cleaned_data['youtube_cookies_txt'].strip()
+
+    def clean_support_hours(self):
+        return self.cleaned_data['support_hours'].strip()
 
     def clean_support_whatsapp_number(self):
         value = self.cleaned_data['support_whatsapp_number'].strip()

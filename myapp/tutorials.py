@@ -1,5 +1,7 @@
-"""Video tutorials: short clips staff upload on the dashboard and users
-watch in a pop-up on the AI page (profile menu → Video tutorials).
+"""Video tutorials: short clips, or pictures (screenshot guides), that staff
+upload on the dashboard and users open from a list in a pop-up on the AI
+page (profile menu → Video tutorials). Pictures go through the same upload,
+Dropbox copy and logged-in-only serving as clips.
 
     Dashboard  /store/dashboard/tutorials/                    list, edit, reorder, delete
                /store/dashboard/tutorials/upload/start/       a new clip: title, name, size
@@ -19,6 +21,8 @@ Playback answers each byte-range request with at most RANGE_BYTES: the
 browser simply asks for the next piece, and no viewer holds one of the
 server's few threads for the length of a video.
 """
+import base64
+import io
 import logging
 import re
 import threading
@@ -33,6 +37,7 @@ from django.http import FileResponse, HttpResponse, JsonResponse, StreamingHttpR
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from PIL import Image, ImageOps
 
 from myapp import dropbox_images, dropbox_layout
 from myapp.models import TutorialVideo
@@ -42,16 +47,27 @@ logger = logging.getLogger(__name__)
 
 CHUNK_BYTES = 4 * 1024 * 1024
 MAX_BYTES = 500 * 1024 * 1024
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
 RANGE_BYTES = 2 * 1024 * 1024
 MAX_POSTER_CHARS = 400_000
+POSTER_EDGE = 360
 FOLDER = 'tutorials'
 DROPBOX_FOLDER = 'Tutorials'
-CONTENT_TYPES = {
+VIDEO_TYPES = {
     'mp4': 'video/mp4',
     'm4v': 'video/mp4',
     'webm': 'video/webm',
     'mov': 'video/quicktime',
 }
+# A tutorial can also be a picture: a screenshot or a step-by-step guide.
+IMAGE_TYPES = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'webp': 'image/webp',
+    'gif': 'image/gif',
+}
+CONTENT_TYPES = {**VIDEO_TYPES, **IMAGE_TYPES}
 _POSTER_RE = re.compile(r'^data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$')
 _RANGE_RE = re.compile(r'^bytes=(\d*)-(\d*)$')
 
@@ -83,6 +99,21 @@ def _human_length(seconds):
         return ''
     minutes, seconds = divmod(int(seconds), 60)
     return f'{minutes}:{seconds:02d}'
+
+
+def _image_poster(path):
+    """A small JPEG data URI of an uploaded picture for the lists, or None
+    when the file is not a picture Pillow can open."""
+    try:
+        with Image.open(path) as picture:
+            picture.load()
+            copy = ImageOps.exif_transpose(picture).convert('RGB')
+    except Exception:
+        return None
+    copy.thumbnail((POSTER_EDGE, POSTER_EDGE * 2))
+    out = io.BytesIO()
+    copy.save(out, 'JPEG', quality=75)
+    return 'data:image/jpeg;base64,' + base64.b64encode(out.getvalue()).decode()
 
 
 # ---- Dropbox ------------------------------------------------------------------
@@ -168,6 +199,7 @@ def api_list(request):
     videos = TutorialVideo.objects.filter(status=TutorialVideo.STATUS_READY, is_active=True)
     items = [{
         'id': video.pk,
+        'kind': video.kind,
         'title': video.title,
         'description': video.description,
         'poster': video.poster,
@@ -256,8 +288,10 @@ def dashboard_page(request):
         'videos': videos,
         'visible_count': sum(1 for v in videos if v.is_active and v.status == TutorialVideo.STATUS_READY),
         'max_mb': MAX_BYTES // (1024 * 1024),
+        'max_image_mb': MAX_IMAGE_BYTES // (1024 * 1024),
         'chunk_bytes': CHUNK_BYTES,
-        'extensions': ', '.join(f'.{ext}' for ext in CONTENT_TYPES),
+        'extensions': ', '.join(f'.{ext}' for ext in VIDEO_TYPES),
+        'image_extensions': ', '.join(f'.{ext}' for ext in IMAGE_TYPES),
         'dropbox_on': dropbox_images.is_enabled() and dropbox_images.is_configured(),
     })
 
@@ -281,15 +315,25 @@ def upload_start(request):
     if len(description) > 300:
         return _error('Keep the description under 300 characters.')
     if extension not in CONTENT_TYPES:
-        return _error('That file type can\'t be played in browsers. Choose an MP4 (best), WebM or MOV video.')
+        return _error(
+            'That file type can\'t be shown in browsers. Choose an MP4 (best), WebM or MOV video, '
+            'or a JPG, PNG, WebP or GIF picture.'
+        )
+    kind = TutorialVideo.KIND_IMAGE if extension in IMAGE_TYPES else TutorialVideo.KIND_VIDEO
     if size <= 0:
-        return _error('That file looks empty. Choose the video again.')
+        return _error('That file looks empty. Choose it again.')
+    if kind == TutorialVideo.KIND_IMAGE and size > MAX_IMAGE_BYTES:
+        return _error(
+            f'That picture is {_human_size(size)}; the limit is {MAX_IMAGE_BYTES // (1024 * 1024)} MB. '
+            'Save it as a JPG, or make it smaller, and try once more.'
+        )
     if size > MAX_BYTES:
         return _error(
             f'That video is {_human_size(size)}; the limit is {MAX_BYTES // (1024 * 1024)} MB. '
             'Export it again at 720p, or shorten it, and try once more.'
         )
     video = TutorialVideo(
+        kind=kind,
         title=title, description=description, original_name=name[:255], extension=extension, size=size,
         sort_order=(TutorialVideo.objects.aggregate(top=Max('sort_order'))['top'] or 0) + 1,
         uploaded_by=request.user,
@@ -337,14 +381,24 @@ def upload_finish(request, pk):
     if video.status != TutorialVideo.STATUS_UPLOADING:
         return _error('This upload is already finished.')
     if video.received != video.size or not _on_server(video):
-        return _error('Part of the video is missing. Upload it again.')
-    poster = (request.POST.get('poster') or '').strip()
-    if poster and (len(poster) > MAX_POSTER_CHARS or not _POSTER_RE.match(poster)):
-        poster = ''
-    try:
-        duration = max(0, min(int(float(request.POST.get('duration') or 0)), 6 * 3600))
-    except ValueError:
+        return _error('Part of the file is missing. Upload it again.')
+    if video.kind == TutorialVideo.KIND_IMAGE:
+        # The cover is made here from the picture itself, which also checks
+        # that the file really is one.
+        poster = _image_poster(_local_path(video))
+        if poster is None:
+            _delete_files(video)
+            video.delete()
+            return _error('That file is not a picture that can be opened. Choose a JPG, PNG, WebP or GIF.')
         duration = 0
+    else:
+        poster = (request.POST.get('poster') or '').strip()
+        if poster and (len(poster) > MAX_POSTER_CHARS or not _POSTER_RE.match(poster)):
+            poster = ''
+        try:
+            duration = max(0, min(int(float(request.POST.get('duration') or 0)), 6 * 3600))
+        except ValueError:
+            duration = 0
     video.poster = poster
     video.duration_seconds = duration
     video.status = TutorialVideo.STATUS_READY

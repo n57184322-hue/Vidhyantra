@@ -42,6 +42,9 @@ _NOT_CHAT = [
     (re.compile(r'parakeet|canary|whisper|riva|fastpitch|magpie|audio2face|tts|asr', re.I), 'a speech model'),
 ]
 _VISION_HINT = re.compile(r'vision|[-_]vl\b|[-_]vl[-_]|vlm|omni|pixtral|gemma-3|llava|kosmos|neva|paligemma', re.I)
+# A model renamed as a GPT on the dashboard wears the same mark and colours
+# as the built-in GPT models (Sol / Terra / Luna) in the picker and replies.
+_GPT_NAME = re.compile(r'\b(?:chat\s*)?gpt\b|\bopenai\b', re.I)
 
 _last_sync = {'version': None, 'at': 0.0}
 
@@ -319,6 +322,7 @@ def _config(row):
         'base_url': NVIDIA_BASE_URL if row.api_type == row.API_NVIDIA else row.base_url,
         'timeout': ai_chat.STREAM_TIMEOUT_LONG,
         'custom': True,
+        'look': ai_chat.SOL_MODEL_KEY if _GPT_NAME.search(row.display_name or '') else '',
     }
 
 

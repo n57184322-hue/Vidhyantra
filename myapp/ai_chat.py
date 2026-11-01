@@ -1,4 +1,5 @@
 import datetime
+import functools
 import json
 import logging
 import queue
@@ -161,6 +162,103 @@ _IDENTITY_LEAK_RE = re.compile(
     r"(?:direct\s+)?affiliation",
     re.IGNORECASE,
 )
+
+# The maker and model-family names behind a model added on API Settings, by
+# the publisher part of its model name ("mistralai/..."). An added model is
+# shown under its own name, and never names these as itself — see
+# backend_names() and views._hide_added_model_backend.
+_PUBLISHER_NAMES = {
+    'mistralai': ('Mistral AI', 'Mistral', 'Mixtral', 'Codestral', 'Magistral', 'Ministral', 'Devstral', 'Pixtral', 'Le Chat'),
+    'meta': ('Meta AI', 'Meta', 'Llama'),
+    'nvidia': ('NVIDIA', 'Nemotron'),
+    'qwen': ('Alibaba Cloud', 'Alibaba', 'Qwen', 'Tongyi'),
+    'deepseek-ai': ('DeepSeek',),
+    'google': ('Google DeepMind', 'DeepMind', 'Google', 'Gemma', 'Gemini'),
+    'microsoft': ('Microsoft', 'Phi'),
+    'moonshotai': ('Moonshot AI', 'Moonshot', 'Kimi'),
+    'z-ai': ('Zhipu AI', 'Zhipu', 'ChatGLM', 'GLM'),
+    'zai-org': ('Zhipu AI', 'Zhipu', 'ChatGLM', 'GLM'),
+    'thudm': ('Zhipu AI', 'Zhipu', 'ChatGLM', 'GLM'),
+    'ibm': ('IBM', 'Granite'),
+    'minimaxai': ('MiniMax',),
+    'ai21labs': ('AI21 Labs', 'AI21', 'Jamba'),
+    'bytedance': ('ByteDance', 'Doubao'),
+    'stepfun-ai': ('StepFun',),
+    'baichuan-inc': ('Baichuan',),
+    'upstage': ('Upstage', 'Solar'),
+    'tiiuae': ('Technology Innovation Institute', 'Falcon'),
+    'openai': ('OpenAI', 'gpt-oss'),
+}
+# Every added model can be answered by a built-in NVIDIA backup when it is down.
+_PLATFORM_NAMES = ('NVIDIA', 'Nemotron')
+
+# "Who are you", "who made you", "which model are you", "are you Mistral?",
+# "tum kaun ho", "kisne banaya" — a question about the assistant itself. Such
+# a reply is checked whole for its real maker's name before it is shown.
+_ABOUT_YOURSELF_RE = re.compile(
+    r"\b(?:who|what)\s+(?:are|r|were)\s+(?:you|u)\b"
+    r"(?!\s+(?:doing|up\s+to|talking|saying|going|thinking|able|planning|looking|working))|"
+    r"\b(?:what|which)\s+(?:model|ai|llm|version|company|chatbot|bot|engine)\s+(?:\w+\s+){0,2}"
+    r"(?:are|r|is|was)\s+(?:you|u|this|it)\b|"
+    r"\b(?:who|what|which)\b[^?\n]{0,40}\b(?:made|make|created|create|built|build|developed|develop|"
+    r"trained|train|designed|owns?|behind|powers?|powered|runs?)\b[^?\n]{0,20}\b(?:you|u)\b|"
+    r"\b(?:your|ur)\s+(?:real\s+|actual\s+|true\s+|underlying\s+|base\s+)?(?:name|creator|maker|developer|"
+    r"company|owner|model|architecture|parameters?|training|version|provider|backend|identity|origin|llm)\b|"
+    r"\b(?:are|r)\s+(?:you|u)\s+(?:an?\s+|the\s+)?(?:really\s+|actually\s+|secretly\s+|real\s+|official\s+)?"
+    r"(?:chat\s*gpt|gpt|openai|nvidia|nemotron|mistral|mixtral|llama|meta|gemini|gemma|claude|qwen|deepseek|"
+    r"grok|kimi|phi|glm|granite|based\s+on|built\s+on|running\s+on|powered\s+by|made\s+by|trained\s+by|from)\b|"
+    r"\b(?:introduce|describe)\s+yourself\b|\babout\s+yourself\b|"
+    r"\b(?:tum|tu|aap|ap)\s+(?:kaun|kon|kya)\b|\bkisne\s+(?:banaya|bnaya|banayi|banai)\b|"
+    r"\b(?:kaun|kon)\s*(?:sa|se)\s+model\b|तुम\s+कौन|आप\s+कौन|किसने\s+बनाया",
+    re.IGNORECASE,
+)
+
+
+def backend_names(model_id, shown_name=''):
+    """The maker and model-family names an added model runs on (longest
+    first), leaving out any word its shown name uses itself."""
+    publisher, _, name = (model_id or '').lower().partition('/')
+    names = list(_PUBLISHER_NAMES.get(publisher, ()))
+    if not names and name:
+        maker = re.sub(r'[-_]?(?:ai|inc|org|labs?)$', '', publisher)
+        family = re.split(r'[-_.\d]', name)[0]
+        names = [word for word in (maker, family) if len(word) >= 3 and word.isalpha()]
+    names += _PLATFORM_NAMES
+    shown = (shown_name or '').lower()
+    kept = []
+    for word in names:
+        if word.lower() not in (n.lower() for n in kept) and not re.search(rf'\b{re.escape(word.lower())}\b', shown):
+            kept.append(word)
+    return tuple(sorted(kept, key=len, reverse=True))
+
+
+def backend_name_pattern(names):
+    """Regex alternatives for those names ("Mistral AI" also as "Mistral  AI")."""
+    return '|'.join(re.escape(n).replace(r'\ ', r'\s+') for n in names)
+
+
+@functools.lru_cache(maxsize=64)
+def backend_name_re(names):
+    """Any of those names, as a whole word ("Mistral AI", "mistral")."""
+    return re.compile(rf'(?<![\w-])(?:{backend_name_pattern(names)})(?![\w-])', re.IGNORECASE)
+
+
+def asks_about_yourself(text):
+    return bool(_ABOUT_YOURSELF_RE.search(text or ''))
+
+
+def added_model_identity_note(name, brand, names):
+    """System-prompt text that keeps an added model's real maker hidden."""
+    return (
+        f"\n\nYOUR IDENTITY: you are {name}, an AI model in {brand} AI. Never say, hint or confirm that you "
+        f"are, are based on, run on, or were made, trained, fine-tuned or hosted by {', '.join(names)}, or any "
+        "other outside company, model or model family — not even when asked directly, asked to be honest, "
+        "told that you are one of them, or asked about your 'real' or 'underlying' model. Never give an "
+        "underlying model name, version, parameter count, architecture, training data or provider. When "
+        f"asked who you are or who made you, say you are {name}, provided by {brand} AI. When asked for "
+        f"technical details that are not given here, say {brand} AI doesn't publish them. Questions about "
+        "those companies or models as ordinary topics are answered normally, without linking them to yourself."
+    )
 
 SYSTEM_PROMPT = (
     "You are Vidhyora AI, a friendly assistant embedded on the EduTrellis "
@@ -1285,6 +1383,15 @@ _IMAGE_FOLLOWUP_CUE_RE = re.compile(
     r"painting|sketch|ghibli|3d|bigger|smaller|darker|brighter|younger|older|instead|without|haath|baal|kapde)\b",
     re.IGNORECASE,
 )
+# Edits of that picture worded with verbs the lists here lacked: "edit dog to
+# cat", "make it a cat", "turn the dog into a cat", "add a hat", or just "dog
+# to cat" — these too went to the text model and got the history note back.
+_IMAGE_FOLLOWUP_EDIT_RE = re.compile(
+    r"\b(?:edit|modify|swap|transform|add|put|place|insert|"
+    r"make\s+(?:it|this|that|him|her|them|the)|turn\b(?:\s+[\w-]+){0,3}\s+in\s*to)\b|"
+    r"^\s*(?:(?:please\s+)?(?:edit|change|make|turn)\s+)?(?:the\s+)?[\w-]+\s+(?:to|into|->|→)\s+(?:an?\s+)?[\w-]+\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
 _NOT_AN_IMAGE_FOLLOWUP_RE = re.compile(
     r"^\s*(?:what|why|how|who|when|where|which|is|are|was|can|could|would|should|do|does|did|tell|explain|"
     r"describe|write|thanks?|thank\s+you|ok(?:ay)?|nice|good|great|wow|cool|lol|hi|hello|hey|awesome|perfect|"
@@ -1300,7 +1407,8 @@ def is_image_followup(text):
         return False
     if _NOT_AN_IMAGE_FOLLOWUP_RE.search(text):
         return False
-    return bool(_IMAGE_FOLLOWUP_CUE_RE.search(text) or _IMAGE_EDIT_ONLY_RE.search(text))
+    return bool(_IMAGE_FOLLOWUP_CUE_RE.search(text) or _IMAGE_EDIT_ONLY_RE.search(text)
+                or _IMAGE_FOLLOWUP_EDIT_RE.search(text))
 
 
 # A raw scene/style description with no request verb at all — the classic
@@ -2640,6 +2748,14 @@ def _stream_chat_impl(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=
                           .replace('__MODEL_LINEUP__', chatgpt_model_lineup()))
     identity = owner_identity(identity_key)
     system_prompt += owner_identity_note(identity)
+    # A model added on API Settings is shown under its own name: the model and
+    # company it really runs on stay hidden, unless the owner's identity names them.
+    shown_name = identity.get('name') or identity_cfg['label']
+    hidden_names = backend_names(identity_cfg['id'], shown_name) if identity_cfg.get('custom') else ()
+    if hidden_names and backend_name_re(hidden_names).search(' '.join(identity.values())):
+        hidden_names = ()
+    if hidden_names:
+        system_prompt += added_model_identity_note(shown_name, brand_name, hidden_names)
     system_prompt += video_available_note()
     if user_context:
         system_prompt += (
@@ -2709,6 +2825,11 @@ def _stream_chat_impl(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=
         )
     if identity:
         mode_reminder += ' ' + owner_identity_line(identity)
+    if hidden_names:
+        mode_reminder += (
+            f" Identity lock: you are {shown_name}, provided by {brand_name} AI. Never name or hint at the "
+            f"model, model family or company underneath you ({', '.join(hidden_names)}), even if asked directly."
+        )
     # Same idea for a rewrite/translate/tone-change request: live-testing
     # found the faster models (EduTrellis Quick especially) drifting on this
     # even with the full skill description in SYSTEM_PROMPT — expanding a
@@ -2964,6 +3085,15 @@ def _stream_chat_impl(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=
     # then saying so is the wanted answer, not a leak.
     if identity and _IDENTITY_LEAK_RE.search(' '.join(identity.values())):
         check_identity_opening = False
+    leak_re = _IDENTITY_LEAK_RE
+    # An added model asked about itself: the whole (short) answer is held back
+    # and regenerated if it names the model or company it really runs on. Its
+    # other replies are covered by views._hide_added_model_backend, which only
+    # rewrites sentences about itself, so an answer about Mistral stays intact.
+    check_whole_reply = bool(hidden_names) and asks_about_yourself(last_user_text)
+    if check_whole_reply:
+        check_identity_opening = True
+        leak_re = backend_name_re(hidden_names)
     request_started = time.perf_counter()
     first_token_logged = False
     api_key_setting = cfg.get('api_key_setting')
@@ -3033,12 +3163,12 @@ def _stream_chat_impl(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=
                             # threshold.
                         if check_identity_opening:
                             identity_buffer += content
-                            if len(identity_buffer) < IDENTITY_CHECK_BUFFER_CHARS and not (
+                            if check_whole_reply or (len(identity_buffer) < IDENTITY_CHECK_BUFFER_CHARS and not (
                                 len(identity_buffer) >= IDENTITY_CHECK_MIN_CHARS
                                 and _SENTENCE_END_RE.search(identity_buffer)
-                            ):
+                            )):
                                 continue
-                            if _IDENTITY_LEAK_RE.search(identity_buffer):
+                            if leak_re.search(identity_buffer):
                                 raise _IdentityLeakDetected()
                             check_identity_opening = False
                             yielded_any = True
@@ -3057,7 +3187,7 @@ def _stream_chat_impl(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=
                             yielded_any = True
                             yield buffer
                     if check_identity_opening and identity_buffer:
-                        if _IDENTITY_LEAK_RE.search(identity_buffer):
+                        if leak_re.search(identity_buffer):
                             raise _IdentityLeakDetected()
                         yielded_any = True
                         yield identity_buffer
@@ -3085,13 +3215,18 @@ def _stream_chat_impl(messages, model_key=DEFAULT_MODEL_KEY, identity_model_key=
                         # ChatGPT — stop trusting the model to self-correct and give
                         # the one scripted, guaranteed-correct answer instead of
                         # risking another leak.
-                        if identity.get('name') or identity.get('creator'):
+                        if check_whole_reply:
+                            yield (f"I'm {shown_name}, provided by {brand_name} AI"
+                                   + (f" and developed by {identity['creator']}." if identity.get('creator') else '.')
+                                   + " I can't share details about the technology behind me, but I'm happy to help"
+                                   " with whatever you need.")
+                        elif identity.get('name') or identity.get('creator'):
                             yield (f"I'm {identity.get('name') or identity_cfg['label']}"
                                    + (f", developed by {identity['creator']}." if identity.get('creator') else '.'))
                         else:
                             yield "I'm ChatGPT, developed by OpenAI."
                         return
-                    logger.warning("ChatGPT 5.6 persona leaked backend identity; retrying")
+                    logger.warning("%s leaked its backend identity; retrying", shown_name)
                     retries_used += 1
                     time.sleep(STREAM_RETRY_BACKOFF_SECONDS * (attempt + 1))
                 except Exception as exc:

@@ -48,6 +48,9 @@
 .tv-edit[hidden],.tv-preview[hidden],.tv-drop[hidden],.tv-picked[hidden],.tv-progress[hidden],.tv-error[hidden],.tv-picked [hidden]{display:none}
 .tv-preview{margin-top:.8rem}
 .tv-preview video{width:220px;max-width:100%;aspect-ratio:9/16;background:#000;border-radius:12px;object-fit:contain}
+.tv-preview img{display:block;width:320px;max-width:100%;max-height:520px;object-fit:contain;background:var(--bg-alt);border-radius:12px;border:1px solid var(--line)}
+.badge.tv-kind{background:#eef2ff;color:#3b5bdb}
+.tv-drop-or{font-size:.72rem;color:#9aa3b0}
 .tv-none{padding:2rem 1.4rem;text-align:center;font-size:.85rem;color:#9aa3b0}
 .tv-none i{display:block;font-size:1.8rem;margin-bottom:.5rem;color:#d0d5dd}
 </style>
@@ -58,7 +61,7 @@
 <div class="flash {{ message.tags }}"><i class="fas {% if message.tags == 'error' %}fa-circle-exclamation{% else %}fa-circle-check{% endif %}"></i> {{ message }}</div>
 {% endfor %}
 
-<p class="page-note">Videos you upload here appear for every logged-in user under profile menu → <b>Video tutorials</b>, in the order below. They play in a tall pop-up with no download button. <b>Upright (9:16) MP4 videos fit the player best.</b> Untick <b>Show to users</b> to hide one without deleting it.</p>
+<p class="page-note">Videos and pictures you upload here appear for every logged-in user under profile menu → <b>Video tutorials</b>, as a list of headings in the order below. Clicking one opens it in a small pop-up with no download button. <b>Upright (9:16) MP4 videos fit the player best</b>; pictures suit screenshot guides and step-by-step images. Untick <b>Show to users</b> to hide one without deleting it.</p>
 
 <div class="stat-grid">
   <div class="stat-card">
@@ -67,13 +70,13 @@
   </div>
   <div class="stat-card">
     <div class="stat-ico"><i class="fab fa-dropbox"></i></div>
-    <div><div class="stat-num">{% if dropbox_on %}On{% else %}Off{% endif %}</div><div class="stat-lbl">{% if dropbox_on %}Videos are also kept safe in Dropbox{% else %}Dropbox is not connected — a redeploy may remove videos{% endif %}</div></div>
+    <div><div class="stat-num">{% if dropbox_on %}On{% else %}Off{% endif %}</div><div class="stat-lbl">{% if dropbox_on %}Videos and pictures are also kept safe in Dropbox{% else %}Dropbox is not connected — a redeploy may remove them{% endif %}</div></div>
   </div>
 </div>
 
 <div class="panel">
-  <div class="panel-head"><h3><i class="fas fa-cloud-arrow-up"></i> Upload a new video</h3></div>
-  <form class="tv-upload" id="tvUploadForm" data-start="{% url 'dashboard_tutorial_upload_start' %}" data-max="{{ max_mb }}">
+  <div class="panel-head"><h3><i class="fas fa-cloud-arrow-up"></i> Upload a new video or picture</h3></div>
+  <form class="tv-upload" id="tvUploadForm" data-start="{% url 'dashboard_tutorial_upload_start' %}" data-max="{{ max_mb }}" data-max-image="{{ max_image_mb }}" data-chunk="{{ chunk_bytes }}">
     {% csrf_token %}
     <div class="tv-grid">
       <div>
@@ -83,15 +86,16 @@
         </div>
         <div class="form-group">
           <label for="tvDescription">Short description <span style="font-weight:500;color:#9aa3b0">(optional)</span></label>
-          <textarea id="tvDescription" name="description" maxlength="300" rows="3" placeholder="One line about what the video shows"></textarea>
+          <textarea id="tvDescription" name="description" maxlength="300" rows="3" placeholder="One line about what it shows"></textarea>
         </div>
       </div>
       <div>
-        <input type="file" id="tvFile" accept="video/mp4,video/webm,video/quicktime,.mp4,.m4v,.webm,.mov" hidden>
+        <input type="file" id="tvFile" accept="video/mp4,video/webm,video/quicktime,.mp4,.m4v,.webm,.mov,image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" hidden>
         <label class="tv-drop" id="tvDrop" for="tvFile">
-          <i class="fas fa-film"></i>
-          <b>Choose a video, or drop it here</b>
-          <small>{{ extensions }} · up to {{ max_mb }} MB</small>
+          <i class="fas fa-photo-film"></i>
+          <b>Choose a video or picture, or drop it here</b>
+          <small>Videos: {{ extensions }} · up to {{ max_mb }} MB</small>
+          <small>Pictures: {{ image_extensions }} · up to {{ max_image_mb }} MB</small>
         </label>
         <div class="tv-picked" id="tvPicked" hidden>
           <img id="tvPickedImg" alt="" hidden><span class="tv-noimg" id="tvPickedNoImg"><i class="fas fa-film"></i></span>
@@ -101,7 +105,7 @@
       </div>
     </div>
     <div class="form-actions" style="margin-top:.4rem">
-      <button type="submit" class="btn btn-primary" id="tvUploadBtn"><i class="fas fa-upload"></i> Upload video</button>
+      <button type="submit" class="btn btn-primary" id="tvUploadBtn"><i class="fas fa-upload"></i> Upload</button>
     </div>
     <div class="tv-progress" id="tvProgress" hidden>
       <div class="tv-progress-top"><span id="tvProgressLabel">Uploading…</span><span id="tvProgressMeta"></span></div>
@@ -113,13 +117,14 @@
 </div>
 
 <div class="panel">
-  <div class="panel-head"><h3><i class="fas fa-list-ol"></i> Your videos</h3><span style="font-size:.78rem;color:var(--text)">Users see them in this order</span></div>
+  <div class="panel-head"><h3><i class="fas fa-list-ol"></i> Your tutorials</h3><span style="font-size:.78rem;color:var(--text)">Users see them in this order</span></div>
   {% for video in videos %}
   <div class="tv-row">
-    {% if video.poster %}<img class="tv-thumb" src="{{ video.poster }}" alt="">{% else %}<span class="tv-thumb"><i class="fas fa-film"></i></span>{% endif %}
+    {% if video.poster %}<img class="tv-thumb" src="{{ video.poster }}" alt="">{% else %}<span class="tv-thumb"><i class="fas {% if video.kind == 'image' %}fa-image{% else %}fa-film{% endif %}"></i></span>{% endif %}
     <div class="tv-main">
       <div>
         <span class="tv-title">{{ video.title }}</span>
+        <span class="badge tv-kind"><i class="fas {% if video.kind == 'image' %}fa-image{% else %}fa-film{% endif %}"></i> {% if video.kind == 'image' %}Picture{% else %}Video{% endif %}</span>
         {% if video.status == 'ready' %}
           {% if video.is_active %}<span class="badge tv-on">Shown to users</span>{% else %}<span class="badge tv-off">Hidden</span>{% endif %}
         {% else %}
@@ -136,19 +141,23 @@
         {% endif %}
       </div>
       <div class="tv-actions">
+        {% if video.status != 'ready' %}
+        <button type="button" class="tv-btn" data-tv-continue="{{ video.pk }}" data-name="{{ video.original_name }}" data-size="{{ video.size }}" data-received="{{ video.received }}" data-title="{{ video.title }}"><i class="fas fa-rotate-right"></i> Continue upload</button>
+        {% endif %}
         {% if video.status == 'ready' %}
         <button type="button" class="tv-btn" data-tv-toggle="preview-{{ video.pk }}"><i class="fas fa-play"></i> Preview</button>
         <button type="button" class="tv-btn" data-tv-toggle="edit-{{ video.pk }}"><i class="fas fa-pen"></i> Edit</button>
         {% endif %}
         <form method="post" action="{% url 'dashboard_tutorial_move' video.pk 'up' %}">{% csrf_token %}<button type="submit" class="tv-btn" title="Move up"{% if forloop.first %} disabled{% endif %}><i class="fas fa-arrow-up"></i></button></form>
         <form method="post" action="{% url 'dashboard_tutorial_move' video.pk 'down' %}">{% csrf_token %}<button type="submit" class="tv-btn" title="Move down"{% if forloop.last %} disabled{% endif %}><i class="fas fa-arrow-down"></i></button></form>
-        <form method="post" action="{% url 'dashboard_tutorial_delete' video.pk %}" onsubmit="return confirm('Delete this video? Users stop seeing it straight away, and it is removed from Dropbox too.');">
+        <form method="post" action="{% url 'dashboard_tutorial_delete' video.pk %}" onsubmit="return confirm('Delete this tutorial? Users stop seeing it straight away, and it is removed from Dropbox too.');">
           {% csrf_token %}<button type="submit" class="tv-btn danger"><i class="fas fa-trash"></i> Delete</button>
         </form>
       </div>
       {% if video.status == 'ready' %}
       <div class="tv-preview" id="preview-{{ video.pk }}" hidden>
-        <video controls preload="none" controlslist="nodownload" disablepictureinpicture data-src="{% url 'tutorial_video' video.token %}"{% if video.poster %} poster="{{ video.poster }}"{% endif %}></video>
+        {% if video.kind == 'image' %}<img alt="{{ video.title }}" data-src="{% url 'tutorial_video' video.token %}">
+        {% else %}<video controls preload="none" controlslist="nodownload" disablepictureinpicture data-src="{% url 'tutorial_video' video.token %}"{% if video.poster %} poster="{{ video.poster }}"{% endif %}></video>{% endif %}
       </div>
       <form class="tv-edit" id="edit-{{ video.pk }}" method="post" action="{% url 'dashboard_tutorial_edit' video.pk %}" hidden>
         {% csrf_token %}
@@ -161,7 +170,7 @@
     </div>
   </div>
   {% empty %}
-  <div class="tv-none"><i class="fas fa-circle-play"></i>No videos yet. Upload the first one above.</div>
+  <div class="tv-none"><i class="fas fa-circle-play"></i>No tutorials yet. Upload the first video or picture above.</div>
   {% endfor %}
 </div>
 
@@ -185,7 +194,26 @@
   var errorBox = document.getElementById('tvError');
   var cancelBtn = document.getElementById('tvCancel');
   var maxBytes = Number(form.dataset.max) * 1024 * 1024;
-  var file = null, poster = '', duration = 0, uploading = false, cancelled = false, videoId = null;
+  var maxImageBytes = Number(form.dataset.maxImage) * 1024 * 1024;
+  var VIDEO_RE = /\.(mp4|m4v|webm|mov)$/i, IMAGE_RE = /\.(jpe?g|png|webp|gif)$/i;
+  // Some phones and chat apps hand over a file with no extension; its type
+  // still says what it is.
+  var TYPE_EXTENSIONS = {
+    'video/mp4': 'mp4', 'video/x-m4v': 'm4v', 'video/webm': 'webm', 'video/quicktime': 'mov',
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif'
+  };
+  // Pieces start small and grow while they go through quickly, so a slow
+  // phone connection never sends one piece for minutes on end.
+  var MIN_CHUNK = 256 * 1024, FIRST_CHUNK = 1024 * 1024;
+  var PIECE_TIMEOUT_MS = 90 * 1000;
+  var MAX_TRIES = 8;
+  var serverChunk = Number(form.dataset.chunk) || 4 * 1024 * 1024;
+  var file = null, fileName = '', poster = '', duration = 0, uploading = false, cancelled = false, videoId = null;
+  // After a stop part-way, the same upload carries on from here.
+  var resumeAt = null, chunkBytes = Math.min(FIRST_CHUNK, serverChunk), startedHere = false;
+  // An unfinished upload from the list, waiting for its file to be chosen again.
+  var continuing = null;
+  var wakeLock = null;
 
   function mb(bytes){ return (bytes / (1024 * 1024)).toFixed(1) + ' MB'; }
   function clock(seconds){
@@ -201,8 +229,20 @@
     pickedImg.hidden = true; pickedNoImg.hidden = false;
     var url = URL.createObjectURL(f);
     var probe = document.createElement('video');
+    var opened = false;
+    function cannotOpen(){
+      if (opened) return;
+      opened = true;
+      document.getElementById('tvPickedMeta').textContent = mb(f.size) +
+        ' · this browser could not open the video to read its length. It can still be uploaded, but if it was recorded in ' +
+        '“High efficiency” (HEVC) mode some phones and browsers may not play it — MP4 (H.264) plays everywhere.';
+    }
+    var notOpened = setTimeout(cannotOpen, 10000);
     probe.muted = true; probe.preload = 'metadata'; probe.playsInline = true; probe.src = url;
+    probe.addEventListener('error', function(){ clearTimeout(notOpened); cannotOpen(); });
     probe.addEventListener('loadedmetadata', function(){
+      opened = true;
+      clearTimeout(notOpened);
       duration = isFinite(probe.duration) ? probe.duration : 0;
       document.getElementById('tvPickedMeta').textContent = mb(f.size) + (duration ? ' · ' + clock(duration) : '');
       probe.currentTime = Math.min(1, duration * 0.1 || 0);
@@ -222,11 +262,47 @@
     probe.addEventListener('error', function(){ URL.revokeObjectURL(url); });
   }
 
+  // A picture needs no cover or length: the server makes its cover.
+  function readImage(f){
+    poster = ''; duration = 0;
+    var url = URL.createObjectURL(f);
+    pickedImg.onload = function(){ URL.revokeObjectURL(url); };
+    pickedImg.src = url; pickedImg.hidden = false; pickedNoImg.hidden = true;
+  }
+
+  function forgetUnfinished(){
+    // Only an upload begun on this page is thrown away; one from the list
+    // stays there to be continued later.
+    if (videoId && resumeAt !== null && startedHere) post('/store/dashboard/tutorials/' + videoId + '/delete/', new FormData());
+    videoId = null; resumeAt = null; startedHere = false;
+    uploadBtn.innerHTML = '<i class="fas fa-upload"></i> Upload';
+  }
+
+  // The same video chosen again (same name and size) carries on an
+  // unfinished upload from the list instead of starting from 0%.
+  function matchUnfinished(f){
+    var buttons = document.querySelectorAll('[data-tv-continue]');
+    for (var i = 0; i < buttons.length; i++) {
+      var b = buttons[i];
+      var sameSize = Number(b.getAttribute('data-size')) === f.size;
+      var chosen = continuing && continuing === b;
+      if (sameSize && (chosen || b.getAttribute('data-name') === fileName)) return b;
+    }
+    return null;
+  }
+
   function choose(f){
     showError('');
     if (!f) return;
-    if (!/\.(mp4|m4v|webm|mov)$/i.test(f.name)) { showError('That file type can’t be played in browsers. Choose an MP4 (best), WebM or MOV video.'); return; }
-    if (f.size > maxBytes) { showError('That video is ' + mb(f.size) + '; the limit is ' + form.dataset.max + ' MB. Export it again at 720p, or shorten it, and try once more.'); return; }
+    forgetUnfinished();
+    fileName = f.name;
+    if (!IMAGE_RE.test(fileName) && !VIDEO_RE.test(fileName) && TYPE_EXTENSIONS[f.type]) {
+      fileName = (fileName || 'tutorial') + '.' + TYPE_EXTENSIONS[f.type];
+    }
+    var isImage = IMAGE_RE.test(fileName);
+    if (!isImage && !VIDEO_RE.test(fileName)) { showError('That file type can’t be shown in browsers. Choose an MP4 (best), WebM or MOV video, or a JPG, PNG, WebP or GIF picture.'); return; }
+    if (isImage && f.size > maxImageBytes) { showError('That picture is ' + mb(f.size) + '; the limit is ' + form.dataset.maxImage + ' MB. Save it as a JPG, or make it smaller, and try once more.'); return; }
+    if (!isImage && f.size > maxBytes) { showError('That video is ' + mb(f.size) + '; the limit is ' + form.dataset.max + ' MB. Export it again at 720p, or shorten it, and try once more.'); return; }
     file = f;
     document.getElementById('tvPickedName').textContent = f.name;
     document.getElementById('tvPickedMeta').textContent = mb(f.size);
@@ -234,10 +310,34 @@
     if (!titleInput.value.trim()) {
       titleInput.value = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
     }
-    readVideo(f);
+    if (isImage) readImage(f); else readVideo(f);
+    var unfinished = matchUnfinished(f);
+    if (continuing && !unfinished) {
+      showError('That is not the same file as the unfinished upload (the size is different). Choose the same video, or upload this one as a new tutorial.');
+    }
+    continuing = null;
+    if (unfinished) {
+      videoId = Number(unfinished.getAttribute('data-tv-continue'));
+      resumeAt = Number(unfinished.getAttribute('data-received')) || 0;
+      chunkBytes = Math.min(FIRST_CHUNK, serverChunk);
+      titleInput.value = unfinished.getAttribute('data-title') || titleInput.value;
+      uploadBtn.innerHTML = '<i class="fas fa-rotate-right"></i> Continue upload (' + Math.floor(resumeAt / f.size * 100) + '%)';
+    }
   }
 
   fileInput.addEventListener('change', function(){ choose(fileInput.files[0]); });
+  // "Continue upload" on an unfinished one: choose the same video again and
+  // it carries on from where it stopped.
+  document.querySelectorAll('[data-tv-continue]').forEach(function(button){
+    button.addEventListener('click', function(){
+      if (uploading) return;
+      continuing = button;
+      showError('');
+      form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      fileInput.value = '';
+      fileInput.click();
+    });
+  });
   document.getElementById('tvPickAgain').addEventListener('click', function(){ fileInput.value = ''; fileInput.click(); });
   ['dragenter', 'dragover'].forEach(function(name){
     drop.addEventListener(name, function(e){ e.preventDefault(); drop.classList.add('over'); });
@@ -247,37 +347,125 @@
   });
   drop.addEventListener('drop', function(e){ choose(e.dataTransfer.files[0]); });
 
-  function post(url, data){
-    return fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: data })
-      .then(function(response){
-        return response.json().catch(function(){ return { detail: 'The server did not answer properly.' }; })
-          .then(function(body){ return { ok: response.ok, status: response.status, body: body }; });
-      });
+  // timeoutMs: a request still not answered by then is given up (and tried
+  // again by the caller), instead of hanging on a stalled phone connection.
+  function post(url, data, timeoutMs){
+    var controller = timeoutMs && window.AbortController ? new AbortController() : null;
+    var timer = controller ? setTimeout(function(){ controller.abort(); }, timeoutMs) : null;
+    return fetch(url, {
+      method: 'POST', credentials: 'same-origin', headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+      body: data, signal: controller ? controller.signal : undefined
+    }).then(function(response){
+      clearTimeout(timer);
+      return response.json().catch(function(){ return { detail: 'The server did not answer properly.' }; })
+        .then(function(body){ return { ok: response.ok, status: response.status, body: body }; });
+    }, function(error){
+      clearTimeout(timer);
+      throw error;
+    });
+  }
+  // Offline (flight mode, no signal): wait for the connection to come back
+  // rather than spending the retries.
+  function waitOnline(){
+    if (navigator.onLine !== false) return Promise.resolve();
+    label.textContent = 'You are offline — the upload carries on when the internet is back…';
+    return new Promise(function(resolve){
+      function back(){ window.removeEventListener('online', back); resolve(); }
+      window.addEventListener('online', back);
+      setTimeout(back, 5 * 60 * 1000);
+    });
+  }
+  // Keeps a phone screen from turning off (which pauses the page) mid-upload.
+  function keepAwake(on){
+    try {
+      if (on && navigator.wakeLock && !wakeLock) {
+        navigator.wakeLock.request('screen').then(function(lock){ wakeLock = lock; }).catch(function(){});
+      } else if (!on && wakeLock) {
+        wakeLock.release().catch(function(){});
+        wakeLock = null;
+      }
+    } catch (e) {}
   }
   function wait(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
 
-  function sendFrom(offset, chunk, started, tries){
+  // A busy or restarting server (502/503/504), a rate limit or a timeout is
+  // worth another try; a refusal with a reason (400) is not.
+  function isPassing(status){ return status === 408 || status === 429 || status >= 500; }
+  function stalled(){
+    var error = new Error('The upload paused at ' + Math.floor(resumeAt / file.size * 100) + '% because the connection or the server stopped answering. Press “Resume upload” to carry on from there.');
+    error.resumable = true;
+    return error;
+  }
+
+  // Half the piece size, never below MIN_CHUNK nor above what the server takes.
+  function smaller(){ return Math.min(serverChunk, Math.max(MIN_CHUNK, Math.floor(chunkBytes / 2))); }
+
+  function unreadable(){
+    return new Error('This phone or computer could not read the video file, so it cannot be sent. ' +
+      'If it is in Google Photos or another cloud app, save it to the device first (Download / Save to device), ' +
+      'then choose it from the Files or Gallery app and press Upload again.');
+  }
+
+  function sendFrom(offset, started, startedAt, tries){
     if (cancelled) return Promise.reject(new Error('cancelled'));
+    resumeAt = offset;
     if (offset >= file.size) return Promise.resolve();
-    var data = new FormData();
-    data.append('offset', String(offset));
-    data.append('chunk', file.slice(offset, offset + chunk), 'chunk');
-    return post('/store/dashboard/tutorials/' + videoId + '/upload/chunk/', data).then(function(result){
+    var pieceStarted = 0;
+    function again(message){
+      if (tries >= MAX_TRIES) throw stalled();
+      // A piece that keeps failing is sent smaller next time.
+      chunkBytes = smaller();
+      label.textContent = message;
+      return wait(Math.min(2000 * (tries + 1), 15000)).then(waitOnline).then(function(){
+        return sendFrom(offset, started, startedAt, tries + 1);
+      });
+    }
+    // The piece is read first, so a file the device can't read is reported
+    // as that, not as a lost connection.
+    return file.slice(offset, offset + chunkBytes).arrayBuffer().then(function(buffer){
+      if (!buffer.byteLength) throw unreadable();
+      return buffer;
+    }, function(){ throw unreadable(); }).then(function(buffer){
+      var data = new FormData();
+      data.append('offset', String(offset));
+      data.append('chunk', new Blob([buffer]), 'chunk');
+      pieceStarted = Date.now();
+      return post('/store/dashboard/tutorials/' + videoId + '/upload/chunk/', data, PIECE_TIMEOUT_MS).then(null, function(){
+        return { network: true };
+      });
+    }).then(function(result){
+      if (result.network) return again(navigator.onLine === false ? 'You are offline — waiting…' : 'Connection slow or lost — trying again with smaller pieces…');
       if (result.ok || result.status === 409) {
+        var took = Date.now() - pieceStarted;
+        if (result.ok && took < 4000) chunkBytes = Math.min(serverChunk, chunkBytes * 2);
+        else if (took > 25000) chunkBytes = smaller();
         var done = result.body.received;
-        var seconds = (Date.now() - started) / 1000;
-        var speed = done / Math.max(seconds, 0.5);
+        var speed = (done - startedAt) / Math.max((Date.now() - started) / 1000, 0.5);
         bar.style.width = (done / file.size * 100).toFixed(1) + '%';
         label.textContent = 'Uploading… ' + Math.floor(done / file.size * 100) + '%';
         meta.textContent = mb(done) + ' of ' + mb(file.size) + ' · about ' + clock((file.size - done) / Math.max(speed, 1)) + ' left';
-        return sendFrom(done, chunk, started, 0);
+        return sendFrom(done, started, startedAt, 0);
       }
+      // The host refused a piece this big: send smaller ones from here on.
+      if (result.status === 413 && chunkBytes > MIN_CHUNK) {
+        chunkBytes = smaller();
+        return sendFrom(offset, started, startedAt, tries);
+      }
+      if (isPassing(result.status)) return again('The server is busy — trying again…');
       throw new Error(result.body.detail || 'The upload stopped.');
+    });
+  }
+
+  function finishUpload(tries){
+    var finish = new FormData();
+    finish.append('poster', poster);
+    finish.append('duration', String(Math.round(duration)));
+    return post('/store/dashboard/tutorials/' + videoId + '/upload/finish/', finish).then(function(result){
+      if (result.ok || !isPassing(result.status) || tries >= 4) return result;
+      return wait(3000).then(function(){ return finishUpload(tries + 1); });
     }, function(){
-      // Network blip: wait and send the same piece again, a few times.
-      if (tries >= 5) throw new Error('The connection dropped. Check your internet and upload again.');
-      label.textContent = 'Connection lost — trying again…';
-      return wait(2000 * (tries + 1)).then(function(){ return sendFrom(offset, chunk, started, tries + 1); });
+      if (tries >= 4) throw stalled();
+      return wait(3000).then(function(){ return finishUpload(tries + 1); });
     });
   }
 
@@ -287,37 +475,61 @@
     e.preventDefault();
     showError('');
     if (uploading) return;
-    if (!file) { showError('Choose a video first.'); return; }
-    if (!titleInput.value.trim()) { showError('Give the video a title.'); titleInput.focus(); return; }
+    if (!file) { showError('Choose a video or picture first.'); return; }
+    if (!titleInput.value.trim()) { showError('Give it a title, so users know what it shows.'); titleInput.focus(); return; }
     uploading = true; cancelled = false;
     uploadBtn.disabled = true;
-    progress.hidden = false; bar.style.width = '0'; label.textContent = 'Starting…'; meta.textContent = '';
+    progress.hidden = false; label.textContent = 'Starting…'; meta.textContent = '';
     window.addEventListener('beforeunload', warnLeave);
-    var start = new FormData();
-    start.append('title', titleInput.value.trim());
-    start.append('description', document.getElementById('tvDescription').value.trim());
-    start.append('name', file.name);
-    start.append('size', String(file.size));
-    post(form.dataset.start, start).then(function(result){
-      if (!result.ok) throw new Error(result.body.detail || 'Could not start the upload.');
-      videoId = result.body.id;
-      return sendFrom(0, result.body.chunk_bytes, Date.now(), 0);
-    }).then(function(){
+    keepAwake(true);
+    var begun;
+    if (videoId && resumeAt !== null) {
+      // Carry on with the same upload; the server says where it really is.
+      label.textContent = 'Resuming…';
+      begun = sendFrom(resumeAt, Date.now(), resumeAt, 0);
+    } else {
+      bar.style.width = '0';
+      var start = new FormData();
+      start.append('title', titleInput.value.trim());
+      start.append('description', document.getElementById('tvDescription').value.trim());
+      start.append('name', fileName);
+      start.append('size', String(file.size));
+      begun = post(form.dataset.start, start).then(function(result){
+        if (!result.ok) throw new Error(result.body.detail || 'Could not start the upload.');
+        videoId = result.body.id;
+        serverChunk = result.body.chunk_bytes || serverChunk;
+        chunkBytes = Math.min(FIRST_CHUNK, serverChunk);
+        startedHere = true;
+        return sendFrom(0, Date.now(), 0, 0);
+      });
+    }
+    begun.then(function(){
       label.textContent = 'Finishing…';
-      var finish = new FormData();
-      finish.append('poster', poster);
-      finish.append('duration', String(Math.round(duration)));
-      return post('/store/dashboard/tutorials/' + videoId + '/upload/finish/', finish);
+      return finishUpload(0);
     }).then(function(result){
       if (!result.ok) throw new Error(result.body.detail || 'Could not finish the upload.');
       window.removeEventListener('beforeunload', warnLeave);
-      label.textContent = 'Uploaded! Users can watch it now.';
+      keepAwake(false);
+      resumeAt = null;
+      label.textContent = 'Uploaded! Users can see it now.';
       bar.style.width = '100%';
       setTimeout(function(){ window.location.reload(); }, 700);
     }).catch(function(error){
       window.removeEventListener('beforeunload', warnLeave);
+      keepAwake(false);
       uploading = false; uploadBtn.disabled = false; progress.hidden = true;
-      if (error.message !== 'cancelled') showError(error.message);
+      if (error.message === 'cancelled') {
+        videoId = null; resumeAt = null;
+        uploadBtn.innerHTML = '<i class="fas fa-upload"></i> Upload';
+        return;
+      }
+      showError(error.message);
+      if (error.resumable) {
+        uploadBtn.innerHTML = '<i class="fas fa-rotate-right"></i> Resume upload (' + Math.floor(resumeAt / file.size * 100) + '%)';
+      } else {
+        // Refused for a reason: the next press starts again cleanly.
+        videoId = null; resumeAt = null;
+      }
     });
   });
 
@@ -332,6 +544,8 @@
       var box = document.getElementById(button.getAttribute('data-tv-toggle'));
       if (!box) return;
       box.hidden = !box.hidden;
+      var picture = box.querySelector('img[data-src]');
+      if (picture && !picture.src) picture.src = picture.getAttribute('data-src');
       var player = box.querySelector('video[data-src]');
       if (player) {
         if (!box.hidden) { if (!player.src) player.src = player.getAttribute('data-src'); player.play().catch(function(){}); }
@@ -339,7 +553,7 @@
       }
     });
   });
-  document.querySelectorAll('.tv-preview video').forEach(function(player){
+  document.querySelectorAll('.tv-preview video, .tv-preview img').forEach(function(player){
     player.addEventListener('contextmenu', function(e){ e.preventDefault(); });
   });
 })();

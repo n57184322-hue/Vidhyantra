@@ -91,7 +91,8 @@ class FollowUpOnAShownPictureTests(SimpleTestCase):
     def test_a_few_words_about_the_look_are_an_edit(self):
         from myapp import ai_chat
         for text in ('hands up pose', 'red dress', 'make her smile', 'beach background', 'standing near a car',
-                     'more realistic', 'anime style'):
+                     'more realistic', 'anime style', 'edit dog to cat', 'make it a cat',
+                     'turn the dog into a cat', 'dog to cat', 'replace the dog with a cat', 'add sunglasses'):
             with self.subTest(text=text):
                 self.assertTrue(ai_chat.is_image_followup(text))
 

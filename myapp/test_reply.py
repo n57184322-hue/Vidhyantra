@@ -108,6 +108,31 @@ class FollowUpOnAShownPictureChatTests(TestCase):
         flux.assert_called_once()
         self.assertEqual(flux.call_args.args[2], self.PNG)
 
+    def test_swapping_something_in_the_picture_edits_it(self):
+        # "edit dog to cat" used to reach the text model, which replied with
+        # the history note "[An image was generated in this turn.]".
+        for message in ('edit dog to cat', 'make it a cat', 'turn the dog into a cat', 'dog to cat', 'add a red hat'):
+            with self.subTest(message=message):
+                AIMessage.objects.create(conversation=self.conversation, role='assistant', content='', image_data=self.PNG, model_key='quick')
+                flux = self.send(message)
+                flux.assert_called_once()
+                self.assertEqual(flux.call_args.args[2], self.PNG)
+                self.assertEqual(flux.call_args.args[1], message)
+
+    def test_the_remove_bg_and_erase_buttons_edit_the_attached_picture(self):
+        # What the buttons under a picture send: that picture, attached, with the instruction.
+        from django.http import HttpResponse
+        for message in ('Remove the background of this image completely. Keep the main subject exactly the same.',
+                        'Erase the watermark from this image. Fill that area naturally and keep everything else exactly the same.'):
+            with self.subTest(message=message[:20]), \
+                    patch('myapp.views._ai_flux_response', return_value=HttpResponse()) as flux, \
+                    patch('myapp.views.ai_chat.stream_chat', side_effect=AssertionError('no text model')):
+                self.client.post('/AI/api/send/', data=json.dumps({
+                    'conversation_id': self.conversation.pk, 'message': message, 'model': 'sol', 'image': self.PNG,
+                }), content_type='application/json').getvalue()
+                flux.assert_called_once()
+                self.assertTrue(flux.call_args.args[2].startswith('data:image/'))
+
     def test_once_the_chat_has_moved_on_it_is_ordinary_chat(self):
         AIMessage.objects.create(conversation=self.conversation, role='assistant', content='', image_data=self.PNG, model_key='quick')
         AIMessage.objects.create(conversation=self.conversation, role='user', content='tell me a joke')

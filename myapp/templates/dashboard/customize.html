@@ -91,6 +91,12 @@
         <div class="help">Shown in the "Contact support" popup's email option, and used as the fallback AI Premium purchase-inquiry address.</div>
         {{ form.support_email.errors }}
       </div>
+      <div class="form-group">
+        <label for="{{ form.support_hours.id_for_label }}">Support hours</label>
+        {{ form.support_hours }}
+        <div class="help">When WhatsApp and call support are answered, e.g. "Mon–Fri, 10 AM – 7 PM". Shown in the "Contact support" popup. Leave blank to hide it.</div>
+        {{ form.support_hours.errors }}
+      </div>
     </div>
   </details>
 

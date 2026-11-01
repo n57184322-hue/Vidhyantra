@@ -25,7 +25,7 @@ from django.contrib.auth import authenticate, login, logout, update_session_auth
 from django.contrib.auth.models import User
 from django.db import OperationalError, ProgrammingError
 from django.db.models import Q, F, Count, Sum, Max, Prefetch, Exists, OuterRef
-from django.db.models.functions import TruncDate
+from django.db.models.functions import Coalesce, Greatest, Substr, TruncDate
 from django.shortcuts import render, redirect, get_object_or_404
 from django.template.loader import render_to_string
 from django.urls import resolve, Resolver404, reverse
@@ -51,6 +51,7 @@ from myapp import dropbox_layout
 from myapp import image_edit, image_sheet, image_store
 from myapp import ai_chat
 from myapp import context_compress
+from myapp import custom_models
 from myapp import media_models
 from myapp import video_generation
 from myapp import chat_export
@@ -68,10 +69,10 @@ from myapp import image_ocr
 from myapp import image_generation
 from myapp import privacy
 from myapp import request_router
-from myapp import file_convert
+from myapp import code_runner, file_convert, remember
 from myapp import web_search
 from myapp import deep_research
-from myapp import audio_transcribe
+from myapp import audio_transcribe, video_reader
 from myapp import youtube_download
 from myapp import location_backfill
 from myapp.geocoding import reverse_geocode_place
@@ -112,7 +113,10 @@ def site_customization_context(request):
             ),
             'SITE_SUPPORT_WHATSAPP_DISPLAY': whatsapp_number,
             'SITE_SUPPORT_WHATSAPP_LINK': f'https://wa.me/{whatsapp_digits}',
+            'SITE_SUPPORT_CALL_LINK': f'tel:+{whatsapp_digits}',
             'SITE_SUPPORT_EMAIL': obj.support_email or 'support@edutrellis.in',
+            'SITE_SUPPORT_HOURS': obj.support_hours,
+            'SITE_DEFAULT_SKIN': obj.default_skin,
         }
     except (OperationalError, ProgrammingError):
         # A restored backup can predate the SiteCustomization migration.
@@ -126,7 +130,10 @@ def site_customization_context(request):
             'SITE_SOCIAL_PREVIEW_IMAGE_URL': request.build_absolute_uri(static_url('img/og-cover.jpg')),
             'SITE_SUPPORT_WHATSAPP_DISPLAY': '9695953183',
             'SITE_SUPPORT_WHATSAPP_LINK': 'https://wa.me/919695953183',
+            'SITE_SUPPORT_CALL_LINK': 'tel:+919695953183',
             'SITE_SUPPORT_EMAIL': 'support@edutrellis.in',
+            'SITE_SUPPORT_HOURS': 'Mon–Fri, 10 AM – 7 PM',
+            'SITE_DEFAULT_SKIN': 'doraemon',
         }
 
 
@@ -573,6 +580,9 @@ def ai_password_change(request):
     old_session_key = request.session.session_key
     update_session_auth_hash(request, request.user)  # keep the session logged in
     keep_only_this_device(request.user, old_session_key, request.session.session_key)
+    # The old "stay signed in" tokens stopped working with the old password;
+    # this device gets a new one.
+    remember.issue(request, request.user)
     return JsonResponse({'status': 'ok'})
 
 
@@ -631,6 +641,7 @@ def ai_account_details(request):
             user=request.user,
         ).exclude(url='').order_by('-created_at')[:120]
     ]
+    uploads, files, research = _ai_saved_data(request.user)
 
     api_access = AIAPIAccess.objects.filter(user=request.user).exclude(model_keys='').first()
     api_key = AIAPIKey.objects.filter(user=request.user).first()
@@ -661,8 +672,107 @@ def ai_account_details(request):
         },
         'reports': reports,
         'images': images,
+        'uploads': uploads,
+        'files': files,
+        'research': research,
     })
     response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+AI_SAVED_FILE_KINDS = {
+    'pdf': 'PDF', 'docx': 'Word', 'doc': 'Word', 'xlsx': 'Excel', 'csv': 'CSV', 'pptx': 'PowerPoint',
+    'md': 'Markdown', 'txt': 'Text', 'png': 'Image', 'jpg': 'Image', 'jpeg': 'Image', 'webp': 'Image',
+}
+AI_RESEARCH_FILE_PREFIX = 'deep-research-'
+
+
+def _ai_saved_file_title(head, extension):
+    """The first heading (or first line) of a document, for the "My saved
+    data" list; '' for spreadsheets (their first line is just data) and
+    pictures saved as files."""
+    if extension not in ('pdf', 'docx', 'doc', 'pptx', 'md', 'txt') or (head or '').startswith('data:'):
+        return ''
+    for line in (head or '').splitlines():
+        line = re.sub(r'^[#>*\-\s]+|[*_`]+', '', line).strip()
+        if line:
+            return line[:90]
+    return ''
+
+
+def _ai_saved_data(user):
+    """The "My saved data" panel beyond generated images: pictures the user
+    attached to chats, files the AI made, and deep research reports (each
+    report is saved once per format, so its files are grouped together)."""
+    uploads = [
+        {
+            'id': row['pk'],
+            'url': reverse('ai_uploaded_image', args=[row['pk']]),
+            'conversation_title': row['conversation__title'] or 'Chat',
+            'created_at': timezone.localtime(row['created_at']).isoformat(),
+        }
+        # values() so the (large) pictures themselves are not read here.
+        for row in AIMessage.objects.filter(
+            conversation__user=user, role=AIMessage.ROLE_USER, superseded=False,
+            image_data__startswith='data:image/',
+        ).order_by('-created_at').values('pk', 'created_at', 'conversation__title')[:80]
+    ]
+    files, research, reports_by_key = [], [], {}
+    # Only the start of each file is read: enough for its heading, which tells
+    # apart files that share a name (most PDFs are "generated.pdf").
+    saved_files = AIGeneratedFile.objects.filter(user=user).defer('content').annotate(
+        head=Substr('content', 1, 400),
+    ).order_by('-created_at')[:200]
+    for saved in saved_files:
+        stem, _, extension = saved.file_name.rpartition('.')
+        extension = extension.lower()
+        item = {
+            'name': saved.file_name,
+            'title': _ai_saved_file_title(saved.head, extension),
+            'kind': AI_SAVED_FILE_KINDS.get(extension, extension.upper() or 'File'),
+            'extension': extension,
+            'url': reverse('ai_generated_file_download', args=[saved.token]),
+            'created_at': timezone.localtime(saved.created_at).isoformat(),
+        }
+        if not stem.startswith(AI_RESEARCH_FILE_PREFIX):
+            files.append(item)
+            continue
+        # One run saves every format within moments, under the same name.
+        key = (stem, saved.created_at.replace(second=0, microsecond=0))
+        report = reports_by_key.get(key)
+        if report is None:
+            title = stem[len(AI_RESEARCH_FILE_PREFIX):].replace('-', ' ').strip()
+            report = reports_by_key[key] = {
+                'title': (title[:1].upper() + title[1:]) or 'Research report',
+                'created_at': item['created_at'], 'formats': [],
+            }
+            research.append(report)
+        report['formats'].append(item)
+    return uploads, files, research
+
+
+_AI_UPLOAD_DATA_RE = re.compile(r'^data:(image/(?:png|jpeg|webp|gif));base64,(.+)$', re.DOTALL)
+
+
+def ai_uploaded_image(request, pk):
+    """A picture the signed-in user attached to one of their own chats, for
+    the "My saved data" panel. Never anyone else's."""
+    if not request.user.is_authenticated:
+        raise Http404('Picture not found.')
+    message = AIMessage.objects.filter(
+        pk=pk, role=AIMessage.ROLE_USER, conversation__user=request.user,
+    ).only('image_data').first()
+    match = _AI_UPLOAD_DATA_RE.match(message.image_data) if message else None
+    if not match:
+        raise Http404('Picture not found.')
+    try:
+        payload = base64.b64decode(match.group(2))
+    except (ValueError, TypeError):
+        raise Http404('Picture not found.')
+    response = HttpResponse(payload, content_type=match.group(1))
+    response['Content-Disposition'] = 'inline'
+    response['Cache-Control'] = 'private, max-age=86400'
+    response['X-Content-Type-Options'] = 'nosniff'
     return response
 
 
@@ -982,6 +1092,7 @@ def api_chat_completions(request):
     # leaking the real backend vendor or borrowing a persona name it wasn't
     # given is just as much a trust problem here as it is in the browser UI.
     identity = ai_chat.owner_identity(model_key)
+    reply = _hide_added_model_backend(reply, model_key, identity)
     if identity:
         reply = _owner_identity_public_reply(reply, identity, ai_chat.MODELS[model_key]['label'])
     elif model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, ai_chat.TERRA_MODEL_KEY):
@@ -1430,21 +1541,29 @@ USER_DATA_LOCATION_FILTERS = {
 USER_DATA_SORTS = {
     'newest': ('-date_joined', '-pk'),
     'oldest': ('date_joined', 'pk'),
+    'recently_active': ('-last_active', '-date_joined'),
     'most_chats': ('-chat_count', '-date_joined'),
+    'most_messages': ('-message_count', '-date_joined'),
     'most_logins': ('-store_profile__login_count', '-date_joined'),
+    'name': ('first_name', 'last_name', 'username'),
 }
 
 
 @dashboard_staff_required
 def dashboard_user_data(request):
-    """Minimal customer usage table requested for the staff dashboard."""
+    """Customer usage table for the staff dashboard."""
     q = request.GET.get('q', '').strip()
     date_filter = request.GET.get('when', '').strip()
     location_filter = request.GET.get('location', '').strip()
     subscription_filter = request.GET.get('subscription', '').strip()
+    activity_filter = request.GET.get('active', '').strip()
+    phone_filter = request.GET.get('phone', '').strip()
     sort = request.GET.get('sort', '').strip()
     if sort not in USER_DATA_SORTS:
         sort = 'newest'
+    now = timezone.now()
+    week_ago = now - timedelta(days=7)
+    ends_soon = now + timedelta(days=7)  # a plan ending before this shows "Ends soon"
 
     customers = User.objects.filter(
         is_staff=False, is_superuser=False,
@@ -1453,19 +1572,39 @@ def dashboard_user_data(request):
     total_chats = AIConversation.objects.filter(
         user__is_staff=False, user__is_superuser=False,
     ).count()
+    total_messages = AIMessage.objects.filter(
+        role=AIMessage.ROLE_USER,
+        conversation__user__is_staff=False, conversation__user__is_superuser=False,
+    ).count()
     total_logins = StoreProfile.objects.filter(
         user__is_staff=False, user__is_superuser=False,
     ).aggregate(total=Sum('login_count'))['total'] or 0
+    total_subscribed = customers.filter(store_profile__ai_subscription_until__gt=now).count()
+    active_last_7_days = customers.filter(
+        Q(last_login__gte=week_ago) | Q(ai_conversations__updated_at__gte=week_ago),
+    ).distinct().count()
 
     users = customers.select_related('store_profile').annotate(
         chat_count=Count('ai_conversations', distinct=True),
+        message_count=Count(
+            'ai_conversations__messages',
+            filter=Q(ai_conversations__messages__role=AIMessage.ROLE_USER), distinct=True,
+        ),
+        last_chat_at=Max('ai_conversations__updated_at'),
+    ).annotate(
+        last_active=Greatest(
+            Coalesce('last_chat_at', 'date_joined'), Coalesce('last_login', 'date_joined'),
+        ),
     ).order_by(*USER_DATA_SORTS[sort])
     if q:
         users = users.filter(
             Q(username__icontains=q)
             | Q(first_name__icontains=q)
             | Q(last_name__icontains=q)
+            | Q(email__icontains=q)
+            | Q(store_profile__phone__icontains=q)
             | Q(store_profile__ai_display_name__icontains=q)
+            | Q(store_profile__ai_instagram_handle__icontains=q)
             | Q(store_profile__ai_location__icontains=q)
             | Q(store_profile__location_place_name__icontains=q)
         )
@@ -1483,14 +1622,46 @@ def dashboard_user_data(request):
     else:
         location_filter = 'all'
     if subscription_filter == 'subscribed':
-        users = users.filter(store_profile__ai_subscription_until__gt=timezone.now())
+        users = users.filter(store_profile__ai_subscription_until__gt=now)
+    elif subscription_filter == 'expiring':
+        users = users.filter(
+            store_profile__ai_subscription_until__gt=now,
+            store_profile__ai_subscription_until__lte=ends_soon,
+        )
     elif subscription_filter == 'free':
         users = users.filter(
             Q(store_profile__ai_subscription_until__isnull=True)
-            | Q(store_profile__ai_subscription_until__lte=timezone.now())
+            | Q(store_profile__ai_subscription_until__lte=now)
         )
+    elif subscription_filter == 'paid':
+        users = users.filter(store_profile__manual_amount_paid__gt=0)
     else:
         subscription_filter = 'all'
+    if activity_filter == 'today':
+        users = users.filter(last_active__gte=timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0))
+    elif activity_filter == 'week':
+        users = users.filter(last_active__gte=week_ago)
+    elif activity_filter == 'inactive':
+        users = users.filter(last_active__lt=now - timedelta(days=30))
+    elif activity_filter == 'never_chatted':
+        users = users.filter(chat_count=0)
+    elif activity_filter == 'never_logged_in':
+        users = users.filter(Q(store_profile__isnull=True) | Q(store_profile__login_count=0))
+    else:
+        activity_filter = 'all'
+    if phone_filter == 'verified':
+        users = users.filter(store_profile__phone_verified=True)
+    elif phone_filter == 'unverified':
+        users = users.exclude(store_profile__phone='').filter(
+            store_profile__phone__isnull=False, store_profile__phone_verified=False,
+        )
+    elif phone_filter == 'none':
+        users = users.filter(Q(store_profile__isnull=True) | Q(store_profile__phone=''))
+    else:
+        phone_filter = 'all'
+    filters_applied = bool(q) or any(
+        value != 'all' for value in (date_filter, location_filter, subscription_filter, activity_filter, phone_filter)
+    )
 
     return render(request, 'dashboard/user_data.html', {
         'active': 'user_data',
@@ -1499,10 +1670,18 @@ def dashboard_user_data(request):
         'date_filter': date_filter,
         'location_filter': location_filter,
         'subscription_filter': subscription_filter,
+        'activity_filter': activity_filter,
+        'phone_filter': phone_filter,
+        'filters_applied': filters_applied,
         'sort': sort,
+        'now': now,
+        'ends_soon': ends_soon,
         'total_users': total_users,
         'total_chats': total_chats,
+        'total_messages': total_messages,
         'total_logins': total_logins,
+        'total_subscribed': total_subscribed,
+        'active_last_7_days': active_last_7_days,
         'location_backfill_pending': StoreProfile.objects.filter(
             location_consent=StoreProfile.LOCATION_GRANTED, location_place_name='',
             location_latitude__isnull=False, location_longitude__isnull=False,
@@ -1988,9 +2167,53 @@ AI_ACTIVITY_DATE_FILTERS = {
 
 AI_ACTIVITY_SORTS = {
     'recent': '-updated_at',
+    'newest_started': '-created_at',
     'most_messages': '-message_count',
     'oldest': 'created_at',
 }
+
+AI_ACTIVITY_SIZES = {'single': (1, 1), 'ten': (10, None), 'fifty': (50, None)}
+
+
+def _ai_activity_overview():
+    """Today's totals and the two small charts above the AI Activity table."""
+    today_start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+    chats_today = AIConversation.objects.filter(updated_at__gte=today_start)
+    user_messages_today = AIMessage.objects.filter(role=AIMessage.ROLE_USER, created_at__gte=today_start)
+
+    busiest = list(
+        user_messages_today.exclude(conversation__ip_address__isnull=True)
+        .values('conversation__ip_address').annotate(total=Count('id')).order_by('-total')[:5]
+    )
+    busiest_max = max([row['total'] for row in busiest] or [1])
+    models = list(
+        AIMessage.objects.filter(role=AIMessage.ROLE_ASSISTANT, created_at__gte=today_start)
+        .exclude(model_key='').values('model_key').annotate(total=Count('id')).order_by('-total')[:6]
+    )
+    models_max = max([row['total'] for row in models] or [1])
+    return {
+        'chats_today': chats_today.count(),
+        'total_conversations': AIConversation.objects.count(),
+        'messages_today': user_messages_today.count(),
+        'total_messages': AIMessage.objects.filter(role=AIMessage.ROLE_USER).count(),
+        'active_users_today': chats_today.exclude(user__isnull=True).values('user_id').distinct().count(),
+        'guest_chats_today': chats_today.filter(user__isnull=True).count(),
+        'pictures_today': AIUserImage.objects.filter(created_at__gte=today_start).count(),
+        'guest_ips_today': (
+            chats_today.filter(user__isnull=True).exclude(ip_address__isnull=True)
+            .values('ip_address').distinct().count()
+        ),
+        'busiest_ips': [
+            {'ip': row['conversation__ip_address'], 'count': row['total'],
+             'width': round(row['total'] / busiest_max * 100)}
+            for row in busiest
+        ],
+        'models_today': [
+            {'label': ai_chat.MODELS.get(row['model_key'], {}).get('label', row['model_key']),
+             'count': row['total'], 'width': round(row['total'] / models_max * 100)}
+            for row in models
+        ],
+    }
 
 
 @dashboard_staff_required
@@ -2002,6 +2225,9 @@ def dashboard_ai_activity(request):
     accompanying block tools."""
     q = request.GET.get('q', '').strip()
     date_filter = request.GET.get('when', '').strip()
+    who_filter = request.GET.get('who', '').strip()
+    size_filter = request.GET.get('size', '').strip()
+    has_filter = request.GET.get('has', '').strip()
     sort = request.GET.get('sort', '').strip()
     if sort not in AI_ACTIVITY_SORTS:
         sort = 'recent'
@@ -2036,12 +2262,53 @@ def dashboard_ai_activity(request):
 
     blocked_ips = set(AIBlock.objects.exclude(ip_address__isnull=True).values_list('ip_address', flat=True))
     blocked_user_ids = set(AIBlock.objects.exclude(user__isnull=True).values_list('user_id', flat=True))
+    if who_filter == 'accounts':
+        conversations = conversations.filter(user__isnull=False)
+    elif who_filter == 'guests':
+        conversations = conversations.filter(user__isnull=True)
+    elif who_filter == 'blocked':
+        conversations = conversations.filter(Q(user_id__in=blocked_user_ids) | Q(ip_address__in=blocked_ips))
+    else:
+        who_filter = 'all'
+    if size_filter in AI_ACTIVITY_SIZES:
+        low, high = AI_ACTIVITY_SIZES[size_filter]
+        conversations = conversations.filter(message_count__gte=low)
+        if high is not None:
+            conversations = conversations.filter(message_count__lte=high)
+    else:
+        size_filter = 'all'
+    # Matched by PK subquery, like the search above, so message_count keeps
+    # counting every message in the conversation.
+    if has_filter == 'pictures':
+        conversations = conversations.filter(
+            pk__in=AIUserImage.objects.exclude(conversation__isnull=True).values('conversation_id'),
+        )
+    elif has_filter == 'uploads':
+        conversations = conversations.filter(
+            pk__in=AIMessage.objects.filter(role=AIMessage.ROLE_USER).exclude(image_data='').values('conversation_id'),
+        )
+    elif has_filter == 'documents':
+        conversations = conversations.filter(
+            pk__in=AIMessage.objects.exclude(document_name='').values('conversation_id'),
+        )
+    else:
+        has_filter = 'all'
+    filters_applied = bool(q) or any(
+        value != 'all' for value in (date_filter, who_filter, size_filter, has_filter)
+    )
+
     context = {
         'active': 'ai_activity',
         'conversations': conversations[:200],
+        'matching_count': conversations.count(),
         'q': q,
         'date_filter': date_filter,
+        'who_filter': who_filter,
+        'size_filter': size_filter,
+        'has_filter': has_filter,
+        'filters_applied': filters_applied,
         'sort': sort,
+        **_ai_activity_overview(),
         'blocks': AIBlock.objects.select_related('user', 'created_by').order_by('-created_at'),
         'blocked_ips': blocked_ips,
         'blocked_user_ids': blocked_user_ids,
@@ -2776,6 +3043,44 @@ def dashboard_backup(request):
 
 
 DROPBOX_FIELD_LABELS = {'app_key': 'App Key', 'app_secret': 'App Secret', 'refresh_token': 'Dropbox code or Refresh Token'}
+
+
+@dashboard_staff_required
+def dashboard_backup_folders(request):
+    """The folders at the top of the connected Dropbox, for "Browse folders"
+    on the Backup page. Read-only: choosing one only fills in the folder name,
+    which "Change folder" then saves as before. A name with spaces or other
+    characters can't be used as is (safe_name would turn it into a different
+    folder), so it is listed but marked unusable."""
+    settings_obj = DropboxSettings.get_solo()
+    try:
+        client = dropbox_backup._client(settings_obj)  # BackupError when the package or keys are missing
+        import dropbox as dropbox_sdk
+        result = client.files_list_folder('')
+        entries = list(result.entries)
+        while result.has_more:
+            result = client.files_list_folder_continue(result.cursor)
+            entries.extend(result.entries)
+    except dropbox_backup.BackupError as exc:
+        return JsonResponse({'status': 'error', 'detail': str(exc)}, status=400)
+    except Exception:
+        logger.warning('Could not list the Dropbox folders', exc_info=True)
+        return JsonResponse({
+            'status': 'error', 'detail': "Couldn't reach Dropbox to list the folders. Try again in a moment.",
+        }, status=502)
+    current = dropbox_layout.root().lstrip('/').lower()
+    folders = sorted(
+        (
+            {
+                'name': entry.name,
+                'usable': dropbox_layout.safe_name(entry.name) == entry.name,
+                'current': entry.name.lower() == current,
+            }
+            for entry in entries if isinstance(entry, dropbox_sdk.files.FolderMetadata)
+        ),
+        key=lambda folder: (not folder['current'], folder['name'].lower()),
+    )
+    return JsonResponse({'status': 'ok', 'folders': folders})
 
 
 @dashboard_staff_required
@@ -3825,7 +4130,11 @@ def ai_generated_file_download(request, token):
         payload = doc_text.finish_text_file(generated_file.file_name, generated_file.content, **meta)
         content_type = f"{mimetypes.guess_type(generated_file.file_name)[0] or 'text/plain'}; charset=utf-8"
     response = HttpResponse(payload, content_type=content_type)
-    response['Content-Disposition'] = f'attachment; filename="{generated_file.file_name}"'
+    # ?view=1 ("Open" in My saved data) shows a PDF in the browser instead of
+    # saving it. Only PDFs: any other type stays a download, so a generated
+    # HTML/SVG file can never run as a page on this site.
+    disposition = 'inline' if request.GET.get('view') == '1' and name.endswith('.pdf') else 'attachment'
+    response['Content-Disposition'] = f'{disposition}; filename="{generated_file.file_name}"'
     response['X-Content-Type-Options'] = 'nosniff'
     response['Cache-Control'] = 'private, no-store'
     return response
@@ -3972,6 +4281,8 @@ def ai_page(request):
             'description': cfg['description'],
             'locked': not ai_full_model_access and key not in AI_FREE_MODEL_KEYS,
             'power': not cfg.get('image_generation'),
+            # Whose mark it wears: an added model named as a GPT looks like Sol.
+            'look': cfg.get('look') or key,
         }
         for key, cfg in ai_chat.MODELS.items()
         if key != 'vision' and not cfg.get('hidden_from_picker', False)
@@ -3993,6 +4304,12 @@ def ai_page(request):
         'ai_is_staff': ai_is_staff,
         'ai_is_superuser': bool(request.user.is_authenticated and request.user.is_superuser),
         'ai_subscribed': ai_subscribed,
+        # "Convert a file": what each file type can become, so the page's
+        # buttons and the server's checks always agree.
+        'ai_convert_targets': file_convert.conversion_map(),
+        'ai_convert_max_mb': AI_DOC_MAX_UPLOAD_MB,
+        # Code editor: which languages the Run button can send to the runner.
+        'ai_code_runner_languages': sorted(code_runner.LANGUAGES) if code_runner.is_ready() else [],
         'ai_free_limit': AI_FREE_MESSAGE_LIMIT,
         'ai_free_used': ai_free_used,
         'ai_purchase_url': _ai_purchase_url(),
@@ -4741,6 +5058,71 @@ def _owner_identity_public_reply(reply, identity, mode_label):
     return _normalize_ai_home_links(cleaned)
 
 
+# A sentence in which the assistant talks about itself: "I", "me", "my", "this
+# model", "under the hood", "my base model"... (Hinglish "main"/"mera" too).
+_SELF_SENTENCE_RE = re.compile(
+    r"\b(?:i|i'm|im|i've|i'd|i'll|me|my|mine|myself|main|mai|mera|meri|mere|mujhe)\b|"
+    r"\bthis\s+(?:model|assistant|ai|chatbot)\b|\bunder\s+the\s+hood\b|\bunderlying\b|"
+    r"\bbase\s+model\b|\bbackbone\b",
+    re.IGNORECASE,
+)
+# Words that continue a model name: "Mistral Large 4", "Llama 3.1 70B Instruct",
+# or name what it is: "the Mixtral architecture", "a Llama base model".
+_MODEL_NAME_TAIL = (
+    r'(?:[\s-]+(?:large|medium|small|mini|tiny|nano|super|ultra|nemo|instruct|chat|base|it|'
+    r'[a-z]?\d+(?:\.\d+)*[a-z\d]*))+'
+)
+_MODEL_KIND_TAIL = (
+    r"(?:'s)?\s+(?:architecture|base\s+model|foundation\s+model|model\s+family|family|backbone|"
+    r'weights|checkpoint|model|llm|language\s+model)'
+)
+
+
+def _hide_added_model_backend(reply, model_key, identity=None):
+    """A model added on API Settings is shown under its own name (say "GPT-5.6
+    Sol"); the model and company it really runs on (say Mistral) must never
+    show through as itself. Its exact model name is replaced anywhere; the
+    maker and family names only in sentences where it talks about itself, so
+    a normal answer about Mistral keeps its facts. ai_chat.stream_chat also
+    regenerates an answer to "who are you" that names them."""
+    cfg = ai_chat.MODELS.get(model_key) or {}
+    if not cfg.get('custom'):
+        return reply
+    identity = identity or {}
+    name = identity.get('name') or cfg['label']
+    names = ai_chat.backend_names(cfg['id'], name)
+    hidden = ai_chat.backend_name_re(names)
+    text = str(reply or '')
+    if hidden.search(' '.join(identity.values())):
+        return text     # the owner's identity names it: that is the wanted answer
+    model_id = cfg['id']
+    for exact in (model_id, model_id.split('/')[-1], custom_models.default_name(model_id)):
+        text = re.sub(r'(?<![\w/-])' + re.escape(exact) + r'(?![\w-])', name, text, flags=re.IGNORECASE)
+    team = f'the {ai_chat.get_ai_brand_name()} team'
+    alternatives = ai_chat.backend_name_pattern(names)
+    model_name = re.compile(
+        rf'(?<![\w-])(?:(?:the|an?)\s+)?(?:{alternatives})(?:{_MODEL_NAME_TAIL}(?:{_MODEL_KIND_TAIL})?|{_MODEL_KIND_TAIL})(?![\w-])',
+        re.IGNORECASE,
+    )
+    self_claim = re.compile(
+        r"(\b(?:i'?m|i\s+am|my\s+name\s+is|i'?m\s+called|i\s+am\s+called|called|named)\s+)"
+        rf"(?:an?\s+|the\s+)?(?:{alternatives})(?:'s)?(?:\s+(?:ai|model|assistant|llm|chatbot|language\s+model))?(?![\w-])",
+        re.IGNORECASE,
+    )
+    maker = re.compile(rf"(?<![\w-])(?:the\s+)?(?:{alternatives})(?:'s)?(?:\s+team)?(?![\w-])", re.IGNORECASE)
+    parts = re.split(r'((?<=[.!?])\s+|\n+)', text)
+    for index in range(0, len(parts), 2):
+        sentence = parts[index]
+        if not hidden.search(sentence) or not (_SELF_SENTENCE_RE.search(sentence) or name.lower() in sentence.lower()):
+            continue
+        sentence = model_name.sub(name, sentence)
+        sentence = self_claim.sub(lambda m: m.group(1) + name, sentence)
+        parts[index] = maker.sub(
+            lambda m: team[:1].upper() + team[1:] if not m.string[:m.start()].strip() else team, sentence,
+        )
+    return ''.join(parts)
+
+
 def _ai_public_routed_model_key(response_model_key, routed_model_key):
     """Never expose ChatGPT's private worker selection to the browser."""
     if response_model_key in (ai_chat.CHATGPT_56_MODEL_KEY, ai_chat.SOL_MODEL_KEY, ai_chat.TERRA_MODEL_KEY):
@@ -4784,6 +5166,15 @@ def _ai_chat_failure_reply(error, response_model_key, is_staff=False):
     )
 
 
+# "Remove the background" on a busy picture: the image model can't paint real
+# transparency (it paints a checkerboard), so it is asked for the subject on
+# plain white, and that white is then cut away exactly by myapp/cutout.py.
+AI_PLAIN_BACKGROUND_HINT = (
+    'Show the main subject alone on a perfectly plain, solid pure white background: '
+    'no shadow, no floor, no scenery, no pattern and no checkerboard.'
+)
+
+
 def _ai_flux_response(conversation, prompt, source_image, response_model_key=None, owner_email='',
                       source_words=None, earlier_brief=''):
     """Run a FLUX generation/editing turn and persist the real image URL.
@@ -4798,15 +5189,19 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
     # is set, so an empty reply renders as just the image.
     reply = ''
     brief = ''
+    removing_background = bool(source_image) and cutout.wants_background_removed(prompt)
+    draw_prompt = f'{prompt} {AI_PLAIN_BACKGROUND_HINT}' if removing_background else prompt
+    cut_exactly = False
     try:
         try:
             generated = None
             # "Remove the background" on a picture with a plain one is cut
             # out exactly on the server (myapp/cutout.py): nothing redrawn.
-            if source_image and cutout.wants_background_removed(prompt):
+            if removing_background:
                 cut = cutout.remove_plain_background(source_image)
                 if cut:
                     generated = image_generation.GeneratedImage(content=cut, extension='png')
+                    cut_exactly = True
                     reply = 'Removed the background — everything else is exactly as it was. The picture is now transparent.'
             # Words that must be exact get AI artwork with the words lettered
             # on top by the server: a poster (brand name, price, contact
@@ -4818,7 +5213,7 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
                     poster.make_poster(prompt) or lettering.make_logo(prompt) or lettering.make_text_picture(prompt)
                 )
             if generated is None:
-                generated = image_generation.generate_image(prompt, source_image or None)
+                generated = image_generation.generate_image(draw_prompt, source_image or None)
         except image_generation.ImageGenerationError as exc:
             # The connected backend can't edit an uploaded picture at all (see
             # ImageGenerationError.editing_unavailable), so it is read, the
@@ -4826,9 +5221,22 @@ def _ai_flux_response(conversation, prompt, source_image, response_model_key=Non
             # brief — see myapp/image_edit.py.
             if not (exc.editing_unavailable and source_image):
                 raise
-            redrawn = image_edit.redraw(source_image, prompt, words=source_words, earlier_brief=earlier_brief)
+            redrawn = image_edit.redraw(source_image, draw_prompt, words=source_words, earlier_brief=earlier_brief)
             generated, brief = redrawn.image, redrawn.brief
             reply = '\n\n'.join(part for part in (redrawn.change, image_edit.REDRAWN_NOTE) if part)
+        if removing_background and not cut_exactly:
+            # Drawn on plain white as asked: cut that white away for a truly
+            # transparent picture. Left as drawn if the white isn't clean.
+            drawn = 'data:image/{};base64,{}'.format(
+                generated.extension or 'png', base64.b64encode(generated.content).decode('ascii'),
+            )
+            cut = cutout.remove_plain_background(drawn)
+            if cut:
+                generated = image_generation.GeneratedImage(content=cut, extension='png')
+                reply = '\n\n'.join(part for part in (
+                    'Removed the background — the picture is now transparent.',
+                    image_edit.REDRAWN_NOTE if brief else '',
+                ) if part)
         # Compressed to WebP, cached on the server and uploaded to Dropbox in
         # the background (see myapp.image_store); the link is this site's own.
         stored_image = image_store.save_generated(generated.content, conversation.user, owner_email, brief=brief)
@@ -5281,11 +5689,6 @@ def _ai_chat_send(request):
     elif images and not image_data:
         image_data = images[0]
 
-    # OCR supplements the multimodal model for screenshots and documents.
-    # Failure is harmless: the original image is still analysed by Vision.
-    image_words = image_ocr.extract_data_uri(image_data) if image_data else ''
-    image_ocr_text = '\n\n'.join(part for part in (image_note, image_words) if part)
-
     # document_text/document_name come from a prior call to /AI/api/extract/
     # (the raw file itself is never sent here) — re-capped defensively since
     # the client is untrusted, even though it already capped it once too.
@@ -5297,12 +5700,29 @@ def _ai_chat_send(request):
     else:
         document_text = ''
         document_name = ''
+
+    # OCR supplements the multimodal model for screenshots and documents.
+    # Failure is harmless: the original image is still analysed by Vision.
+    # A video's frames had their words read already, with their times.
+    image_words = (
+        image_ocr.extract_data_uri(image_data)
+        if image_data and not video_reader.is_video_text(document_text) else ''
+    )
+    image_ocr_text = '\n\n'.join(part for part in (image_note, image_words) if part)
+    # The one frame of a sent video that the person sees; ``image`` is then
+    # the picture of its frames, for the model only (myapp.video_reader).
+    video_poster = payload.get('video_poster')
+    if not isinstance(video_poster, str) or not video_poster.startswith('data:image/') \
+            or len(video_poster) > AI_IMAGE_MAX_DATA_URI_CHARS:
+        video_poster = ''
     # Retry / Edit of an earlier message: the attachment it had carries over
     # unless a new one was supplied, since the page never re-uploads it.
     replace_target = _ai_replace_target(request, payload)
     if replace_target is not None and not image_data and not document_text:
         if replace_target.image_data:
-            image_data = replace_target.image_data
+            image_data = replace_target.video_frames or replace_target.image_data
+            if replace_target.video_frames:
+                video_poster = replace_target.image_data
             image_words = None   # read again if the picture is edited
             if replace_target.document_name and replace_target.document_text:
                 # A picture sent with files: their text and its OCR were saved together.
@@ -5313,6 +5733,9 @@ def _ai_chat_send(request):
         elif replace_target.document_name and replace_target.document_text:
             document_text = replace_target.document_text
             document_name = replace_target.document_name
+    # A video comes as one picture of its frames with the text of what is
+    # said and shown in it (myapp.video_reader).
+    video_attached = bool(image_data) and video_reader.is_video_text(document_text)
     requested_document_mode = payload.get('document_mode')
     document_mode = requested_document_mode if document_text and requested_document_mode in AI_DOCUMENT_MODES else ''
     document_truncated = bool(payload.get('document_truncated')) if document_text else False
@@ -5459,7 +5882,12 @@ def _ai_chat_send(request):
         if message and not image_data and not generated_file_spec and ai_chat.is_video_generation_request(message)
         else None
     )
-    if image_file_extension:
+    if video_attached:
+        # A video's frames are looked at with its text, never redrawn or
+        # edited as a picture, whatever the message asks.
+        model_key = selected_model_key if ai_chat.MODELS[selected_model_key].get('vision') else 'vision'
+        request_category = 'image'
+    elif image_file_extension:
         # Built directly from the picture already in the chat - no model call,
         # and never mistaken for a request to draw or edit a picture.
         model_key = 'quick'
@@ -5664,9 +6092,12 @@ def _ai_chat_send(request):
         saved_document_text = f'{document_text}\n\n{AI_IMAGE_TEXT_HEADING}\n{image_ocr_text}'
     else:
         saved_document_text = document_text or image_ocr_text
+    # A video is kept as the one frame people see, with the picture of its
+    # frames beside it for the model only.
+    shown_image, video_frames = (video_poster, image_data) if video_attached and video_poster else (image_data, '')
     user_message = AIMessage.objects.create(
         conversation=conversation, role=AIMessage.ROLE_USER, content=message,
-        image_data=image_data, document_name=document_name,
+        image_data=shown_image, video_frames=video_frames, document_name=document_name,
         document_text=saved_document_text,
         reply_to_text=_ai_reply_quote(payload),
     )
@@ -5768,7 +6199,8 @@ def _ai_chat_send(request):
 
     recent = list(
         _ai_visible_messages(request, conversation).order_by('-created_at')
-        .values('pk', 'role', 'content', 'image_data', 'document_name', 'document_text', 'reply_to_text')[:AI_CHAT_MAX_HISTORY]
+        .values('pk', 'role', 'content', 'image_data', 'video_frames', 'document_name', 'document_text',
+                'reply_to_text')[:AI_CHAT_MAX_HISTORY]
     )
     recent.reverse()
 
@@ -5799,7 +6231,7 @@ def _ai_chat_send(request):
                 text = (m['content'] or 'Describe and analyse this image.') + ocr_note
             content = [
                 {'type': 'text', 'text': text},
-                {'type': 'image_url', 'image_url': {'url': m['image_data']}},
+                {'type': 'image_url', 'image_url': {'url': m['video_frames'] or m['image_data']}},
             ]
         elif m['image_data'] and m['role'] == AIMessage.ROLE_ASSISTANT:
             # This is a generated media URL, not a new user attachment.
@@ -6050,6 +6482,7 @@ def _ai_chat_send(request):
         owner_identity = ai_chat.owner_identity(response_model_key)
 
         def public_text(text):
+            text = _hide_added_model_backend(text, response_model_key, owner_identity)
             if owner_identity:
                 text = _owner_identity_public_reply(text, owner_identity, response_model_label)
             elif hide_chatgpt_worker:
@@ -6471,6 +6904,7 @@ def ai_research_run(request):
     def public_text(text):
         """Keeps the backend vendor's and other modes' names out of the report,
         the same way a chat reply does."""
+        text = _hide_added_model_backend(text, shown_model, owner_identity)
         if owner_identity:
             return _owner_identity_public_reply(text, owner_identity, model_label)
         if shown_model == ai_chat.CHATGPT_56_MODEL_KEY:
@@ -6574,6 +7008,7 @@ def ai_research_run(request):
 
 
 AI_DOC_RATE_LIMIT = 40   # one request per file, and a message can carry several
+AI_VIDEO_RATE_LIMIT = 10
 AI_DOC_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # raw file cap, before extraction
 AI_DOC_MAX_UPLOAD_MB = AI_DOC_MAX_UPLOAD_BYTES // (1024 * 1024)
 
@@ -6618,6 +7053,44 @@ def ai_extract_document(request):
         'status': 'ok', 'filename': f.name,
         'text': text, 'truncated': truncated,
         'coding_text': coding_text, 'coding_truncated': coding_truncated,
+    })
+
+
+def ai_read_video(request):
+    """Reads an uploaded video into one picture of its frames and a text of
+    what is said and shown in it (myapp.video_reader) and hands both back to
+    the browser, which sends them with the next /AI/api/send/ call like a
+    picture sent with a file. The video itself is never stored."""
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+
+    ip = _client_ip(request)
+    cache_key = f'ai_video_rate:{ip}'
+    count = cache.get(cache_key, 0)
+    if count >= AI_VIDEO_RATE_LIMIT:
+        return JsonResponse(
+            {'status': 'error', 'detail': "You're sending videos too quickly — please wait a bit and try again."},
+            status=429,
+        )
+    cache.set(cache_key, count + 1, AI_CHAT_RATE_WINDOW)
+
+    f = request.FILES.get('file')
+    if not f:
+        return JsonResponse({'status': 'error', 'detail': 'No video provided.'}, status=400)
+    if f.size > video_reader.MAX_BYTES:
+        limit_mb = video_reader.MAX_BYTES // (1024 * 1024)
+        return JsonResponse({'status': 'error', 'detail': f'That video is too large — please use one under {limit_mb}MB.'}, status=400)
+
+    try:
+        result = video_reader.read(f)
+    except video_reader.VideoError as e:
+        return JsonResponse({'status': 'error', 'detail': str(e)}, status=400)
+    except Exception:
+        logger.exception("Reading a video failed for %s", f.name)
+        return JsonResponse({'status': 'error', 'detail': "Couldn't read that video — please try a different one."}, status=400)
+
+    return JsonResponse({
+        'status': 'ok', 'filename': f.name, 'text': result['text'], 'image': result['image'], 'poster': result['poster'],
     })
 
 
@@ -6667,6 +7140,93 @@ def ai_convert_file(request):
     response['X-Content-Type-Options'] = 'nosniff'
     response['Cache-Control'] = 'private, no-store'
     return response
+
+
+def ai_convert_preview(request):
+    """A picture of a PDF's first page for the "Convert a file" pop-up (the
+    browser's own PDF viewer is blank in a small frame and missing on phones).
+    Like ai_convert_file, the upload is only held for this request."""
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+    cache_key = f'ai_convert_preview_rate:{_client_ip(request)}'
+    count = cache.get(cache_key, 0)
+    if count >= AI_DOC_RATE_LIMIT * 2:
+        return JsonResponse({'status': 'error', 'detail': 'Too many previews — please wait a bit.'}, status=429)
+    cache.set(cache_key, count + 1, AI_CHAT_RATE_WINDOW)
+    upload = request.FILES.get('file')
+    if not upload or not upload.name.lower().endswith('.pdf') or upload.size > AI_DOC_MAX_UPLOAD_BYTES:
+        return JsonResponse({'status': 'error', 'detail': 'Send one PDF to preview.'}, status=400)
+    try:
+        picture, pages = file_convert.pdf_preview_png(upload.read())
+    except file_convert.ConvertError as exc:
+        return JsonResponse({'status': 'error', 'detail': str(exc)}, status=400)
+    except Exception:
+        logger.exception('PDF preview failed for %s', upload.name)
+        return JsonResponse({'status': 'error', 'detail': "Couldn't preview that PDF."}, status=400)
+    response = HttpResponse(picture, content_type='image/png')
+    response['X-Page-Count'] = str(pages)
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
+# Account → Themes; keep in step with AI_SKINS at the top of templates/ai.html.
+AI_THEME_NAMES = frozenset({
+    'aurora', 'paper', 'sakura', 'terminal', 'ocean',
+    'ironman', 'hulk', 'doraemon', 'shinchan', 'batman', 'superman',
+    'sunset', 'forest', 'royal', 'mono',
+    'hindu', 'islamic', 'christian', 'sikh', 'jain', 'buddhist',
+    'rose', 'midnight', 'coffee', 'lavender', 'neon', 'mint',
+})
+
+
+def ai_default_theme(request):
+    """A superuser picks the theme everyone sees until they choose their own
+    (Account → Themes). 'classic' means no theme."""
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+    if not (request.user.is_authenticated and request.user.is_superuser):
+        return JsonResponse({'status': 'error', 'detail': 'Only a superuser can change this.'}, status=403)
+    try:
+        skin = str(json.loads(request.body or b'{}').get('skin') or '')
+    except (ValueError, AttributeError):
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request.'}, status=400)
+    if skin != 'classic' and skin not in AI_THEME_NAMES:
+        return JsonResponse({'status': 'error', 'detail': 'That theme does not exist.'}, status=400)
+    site = SiteCustomization.get_solo()
+    site.default_skin = '' if skin == 'classic' else skin
+    site.save(update_fields=['default_skin', 'updated_at'])
+    return JsonResponse({'status': 'ok', 'skin': skin})
+
+
+AI_CODE_RUN_LIMIT = 30   # runs per user per AI_CHAT_RATE_WINDOW; the free runner plan is small
+
+
+def ai_code_run(request):
+    """Run Java (and the other code_runner languages) for the chat's code
+    editor. The code goes to the Judge0 service, never runs here. Signed-in
+    users only, because every run uses the shared runner quota."""
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request method.'}, status=405)
+    if not request.user.is_authenticated:
+        return JsonResponse({'status': 'error', 'detail': 'Log in to run this code.'}, status=401)
+    cache_key = f'ai_code_run_rate:{request.user.pk}'
+    count = cache.get(cache_key, 0)
+    if count >= AI_CODE_RUN_LIMIT:
+        return JsonResponse({'status': 'error', 'detail': 'Too many runs in a short time — please wait a few minutes.'}, status=429)
+    try:
+        payload = json.loads(request.body or b'{}')
+    except ValueError:
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request.'}, status=400)
+    if not isinstance(payload, dict):
+        return JsonResponse({'status': 'error', 'detail': 'Invalid request.'}, status=400)
+    cache.set(cache_key, count + 1, AI_CHAT_RATE_WINDOW)
+    try:
+        result = code_runner.run(
+            str(payload.get('language') or ''), str(payload.get('code') or ''), str(payload.get('stdin') or ''),
+        )
+    except code_runner.RunError as exc:
+        return JsonResponse({'status': 'error', 'detail': str(exc)}, status=400)
+    return JsonResponse({'status': 'ok', **result})
 
 
 def _ai_speaker_label(message):
@@ -7065,9 +7625,13 @@ def ai_conversation_messages(request, conversation_id):
     working = dict(AIVideoJob.objects.filter(
         message__conversation=conversation, status=AIVideoJob.STATUS_WORKING,
     ).values_list('message_id', 'token'))
+    # A video the person sent: its image_data is one frame, shown as the video.
+    sent_videos = set(conversation.messages.exclude(video_frames='').values_list('id', flat=True))
     for m in messages_qs:
         if m['id'] in working:
             m['video_job'] = str(working[m['id']])
+        if m['id'] in sent_videos:
+            m['sent_video'] = True
     return JsonResponse({'status': 'ok', 'title': conversation.title, 'messages': messages_qs})
 
 

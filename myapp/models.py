@@ -131,6 +131,28 @@ class ActiveUserSession(models.Model):
         return f'{self.user.username} — {self.session_key}'
 
 
+class RememberedLogin(models.Model):
+    """"Stay signed in" token for one device: logs it back in if its session
+    is lost (see myapp.remember). Only a hash of the secret part is stored,
+    and logging the device out deletes it along with the device."""
+
+    device = models.OneToOneField(ActiveUserSession, on_delete=models.CASCADE, related_name='remembered')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='remembered_logins')
+    selector = models.CharField(max_length=32, unique=True)
+    validator_hash = models.CharField(max_length=64)
+    password_check = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Remembered Login'
+        verbose_name_plural = 'Remembered Logins'
+
+    def __str__(self):
+        return f'{self.user.username} — device {self.device_id}'
+
+
 def _new_device_token():
     return secrets.token_urlsafe(24)
 
@@ -768,6 +790,10 @@ class AIMessage(models.Model):
     role         = models.CharField(max_length=10, choices=ROLE_CHOICES)
     content      = models.TextField()
     image_data   = models.TextField(blank=True)  # data: URI of an attached image, if any (user turns only)
+    # A video sent in the chat (myapp.video_reader): the picture of its frames,
+    # which only the model reads. image_data then holds one frame of the
+    # video, which is all a person ever sees of it.
+    video_frames = models.TextField(blank=True)
     document_name = models.CharField(max_length=255, blank=True)
     # Extracted text (capped by doc_extract.MAX_CHARS), persisted so
     # follow-up questions about the same document work without re-uploading
@@ -962,6 +988,16 @@ class SiteCustomization(models.Model):
         max_length=254, default='support@edutrellis.in',
         help_text='Shown in the in-app "Contact support" popup\'s email option and used for its mailto: link.',
     )
+    support_hours = models.CharField(
+        max_length=120, blank=True, default='Mon–Fri, 10 AM – 7 PM',
+        help_text='When WhatsApp and call support are answered, shown in the "Contact support" popup. '
+                  'Leave blank to show no hours.',
+    )
+    default_skin = models.CharField(
+        max_length=20, blank=True, default='doraemon',
+        help_text='The Account → Themes theme everyone sees until they pick their own. Blank means Classic. '
+                  'Set by a superuser from the Themes tab.',
+    )
     youtube_cookies_txt = models.TextField(
         blank=True,
         help_text='Paste a YouTube cookies.txt (Netscape format), exported while logged into YouTube in a normal '
@@ -1141,15 +1177,20 @@ def _new_tutorial_token():
 
 
 class TutorialVideo(models.Model):
-    """One "Video tutorials" clip, uploaded by staff on the dashboard and
-    played in a pop-up on the AI page (see myapp.tutorials). The file lives
-    on the server (a cache) and in Dropbox (the lasting copy), like the AI
-    images; it is not a FileField, so backups don't carry the videos."""
+    """One "Video tutorials" item - a clip or a picture (a screenshot guide) -
+    uploaded by staff on the dashboard and shown in a pop-up on the AI page
+    (see myapp.tutorials). The file lives on the server (a cache) and in
+    Dropbox (the lasting copy), like the AI images; it is not a FileField, so
+    backups don't carry the files."""
     STATUS_UPLOADING = 'uploading'
     STATUS_READY = 'ready'
     STATUS_CHOICES = [(STATUS_UPLOADING, 'Uploading'), (STATUS_READY, 'Ready')]
+    KIND_VIDEO = 'video'
+    KIND_IMAGE = 'image'
+    KIND_CHOICES = [(KIND_VIDEO, 'Video'), (KIND_IMAGE, 'Image')]
 
     token = models.CharField(max_length=40, unique=True, default=_new_tutorial_token)
+    kind = models.CharField(max_length=8, choices=KIND_CHOICES, default=KIND_VIDEO)
     title = models.CharField(max_length=120)
     description = models.CharField(max_length=300, blank=True)
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_UPLOADING)

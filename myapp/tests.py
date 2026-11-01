@@ -945,6 +945,115 @@ class DashboardSignupPasswordResetTests(TestCase):
         self.assertTrue(victim.check_password('unchanged'))
 
 
+class MySavedDataTests(TestCase):
+    """Profile menu → My saved data: made and uploaded pictures, created
+    files and deep research reports, each only for its owner."""
+    PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+    def setUp(self):
+        self.user = User.objects.create_user('saver', email='saver@example.com', password='pw')
+        StoreProfile.objects.create(user=self.user)
+        self.chat = AIConversation.objects.create(user=self.user, title='Shoes')
+        self.upload = AIMessage.objects.create(conversation=self.chat, role=AIMessage.ROLE_USER, content='edit', image_data=self.PNG)
+        AIMessage.objects.create(conversation=self.chat, role=AIMessage.ROLE_USER, content='old', image_data=self.PNG, superseded=True)
+        AIUserImage.objects.create(user=self.user, conversation=self.chat, url='/media/ai_generated/a.png')
+        AIGeneratedFile.objects.create(user=self.user, file_name='invoice.pdf', content='# Invoice')
+        for extension in ('pdf', 'docx', 'md'):
+            AIGeneratedFile.objects.create(user=self.user, file_name=f'deep-research-solar-panels-india.{extension}', content='# R')
+        self.client.force_login(self.user)
+
+    def test_account_data_lists_every_kind_under_its_own_heading(self):
+        body = self.client.get('/AI/api/account/').json()
+        self.assertEqual(len(body['images']), 1)
+        self.assertEqual([u['id'] for u in body['uploads']], [self.upload.pk])  # not the replaced message
+        self.assertEqual([f['name'] for f in body['files']], ['invoice.pdf'])
+        self.assertEqual(body['files'][0]['kind'], 'PDF')
+        self.assertEqual(len(body['research']), 1)
+        report = body['research'][0]
+        self.assertEqual(report['title'], 'Solar panels india')
+        self.assertEqual(sorted(f['kind'] for f in report['formats']), ['Markdown', 'PDF', 'Word'])
+
+    def test_an_uploaded_picture_is_served_only_to_its_owner(self):
+        url = f'/AI/api/uploads/{self.upload.pk}/image'
+        mine = self.client.get(url)
+        self.assertEqual(mine.status_code, 200)
+        self.assertEqual(mine['Content-Type'], 'image/png')
+        self.assertTrue(mine.content.startswith(b'\x89PNG'))
+        other = User.objects.create_user('other', password='pw')
+        self.client.force_login(other)
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.client.logout()
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_a_pdf_opens_in_the_browser_but_other_files_stay_downloads(self):
+        files = {f['name']: f for f in self.client.get('/AI/api/account/').json()['files']}
+        pdf_url = files['invoice.pdf']['url']
+        self.assertEqual(files['invoice.pdf']['title'], 'Invoice')  # its heading, to tell same-named files apart
+        opened = self.client.get(pdf_url + '?view=1')
+        self.assertEqual(opened.status_code, 200)
+        self.assertTrue(opened['Content-Disposition'].startswith('inline;'))
+        self.assertTrue(self.client.get(pdf_url)['Content-Disposition'].startswith('attachment;'))
+        page = AIGeneratedFile.objects.create(user=self.user, file_name='page.html', content='<script>alert(1)</script>')
+        html = self.client.get(f'/AI/api/files/{page.token}/download/?view=1')
+        self.assertTrue(html['Content-Disposition'].startswith('attachment;'))
+
+    def test_the_menu_says_my_saved_data(self):
+        response = self.client.get('/')
+        self.assertContains(response, 'My saved data')
+        self.assertNotContains(response, 'My Images')
+
+
+class DashboardAIActivityOverviewTests(TestCase):
+    def setUp(self):
+        staff = User.objects.create_user(username='activity-staff', password='x', is_staff=True)
+        self.member = User.objects.create_user(username='member', email='member@example.com', password='x')
+        self.member_chat = AIConversation.objects.create(user=self.member, title='Poster', ip_address='10.0.0.1')
+        for text in ('make a poster', 'bigger title'):
+            AIMessage.objects.create(conversation=self.member_chat, role=AIMessage.ROLE_USER, content=text)
+        AIMessage.objects.create(
+            conversation=self.member_chat, role=AIMessage.ROLE_ASSISTANT, content='done', model_key='quick',
+        )
+        AIUserImage.objects.create(user=self.member, conversation=self.member_chat, url='/media/a.png')
+        self.guest_chat = AIConversation.objects.create(title='Hi', ip_address='10.0.0.2')
+        AIMessage.objects.create(
+            conversation=self.guest_chat, role=AIMessage.ROLE_USER, content='hi', image_data='data:image/png;base64,AA',
+        )
+        AIBlock.objects.create(ip_address='10.0.0.2', created_by=staff)
+        # The staff account that made a block can be deleted later.
+        AIBlock.objects.create(ip_address='10.0.0.9', created_by=None)
+        self.client.force_login(staff)
+
+    def matching(self, query):
+        return list(self.client.get('/store/dashboard/ai/activity/?' + query).context['conversations'])
+
+    def test_overview_shows_todays_totals_and_charts(self):
+        response = self.client.get('/store/dashboard/ai/activity/')
+
+        self.assertEqual(response.context['chats_today'], 2)
+        self.assertEqual(response.context['messages_today'], 3)
+        self.assertEqual(response.context['active_users_today'], 1)
+        self.assertEqual(response.context['guest_chats_today'], 1)
+        self.assertEqual(response.context['guest_ips_today'], 1)
+        self.assertEqual(response.context['pictures_today'], 1)
+        self.assertEqual(response.context['busiest_ips'][0]['ip'], '10.0.0.1')
+        self.assertEqual(response.context['busiest_ips'][0]['count'], 2)
+        self.assertEqual(response.context['models_today'][0]['label'], ai_chat.MODELS['quick']['label'])
+        self.assertContains(response, 'Busiest IP addresses today')
+
+    def test_new_filters(self):
+        self.assertEqual(self.matching('who=accounts'), [self.member_chat])
+        self.assertEqual(self.matching('who=guests'), [self.guest_chat])
+        self.assertEqual(self.matching('who=blocked'), [self.guest_chat])
+        self.assertEqual(self.matching('size=single'), [self.guest_chat])
+        self.assertEqual(self.matching('has=pictures'), [self.member_chat])
+        self.assertEqual(self.matching('has=uploads'), [self.guest_chat])
+        self.assertEqual(self.matching('has=documents'), [])
+        # Filtering by content must not change the conversation's real message count.
+        response = self.client.get('/store/dashboard/ai/activity/?has=pictures')
+        self.assertEqual(response.context['conversations'][0].message_count, 3)
+        self.assertContains(response, 'Clear filters')
+
+
 class DashboardUserDataTests(TestCase):
     def setUp(self):
         self.staff = User.objects.create_user(
@@ -974,15 +1083,48 @@ class DashboardUserDataTests(TestCase):
         self.assertContains(response, 'User name')
         self.assertContains(response, 'Location')
         self.assertContains(response, 'Chats done')
-        self.assertContains(response, 'Times logged in')
+        self.assertContains(response, 'Logins')
         self.assertContains(response, 'Anita Sharma')
         self.assertContains(response, 'Lucknow, Uttar Pradesh')
         self.assertContains(response, 'anita@example.com')
-        self.assertContains(response, 'Email')
+        self.assertContains(response, 'Last active')
+        self.assertContains(response, 'Plan')
         self.assertContains(response, 'View chats')
         row = response.context['users'].get(pk=self.customer.pk)
         self.assertEqual(row.chat_count, 3)
         self.assertEqual(row.store_profile.login_count, 4)
+
+    def test_user_data_counts_messages_and_filters_by_activity_phone_and_plan(self):
+        chat = AIConversation.objects.filter(user=self.customer).first()
+        AIMessage.objects.create(conversation=chat, role=AIMessage.ROLE_USER, content='hi')
+        AIMessage.objects.create(conversation=chat, role=AIMessage.ROLE_ASSISTANT, content='hello')
+        idle = User.objects.create_user(username='idle-customer', password='password')
+        StoreProfile.objects.create(
+            user=idle, phone='9999999999', phone_verified=True, manual_amount_paid=499,
+            ai_subscription_until=timezone.now() + timedelta(days=3),
+        )
+        User.objects.filter(pk=idle.pk).update(date_joined=timezone.now() - timedelta(days=60))
+
+        response = self.client.get('/store/dashboard/user-data/')
+        self.assertEqual(response.context['total_messages'], 1)
+        self.assertEqual(response.context['total_subscribed'], 1)
+        self.assertEqual(response.context['users'].get(pk=self.customer.pk).message_count, 1)
+        self.assertContains(response, 'Ends soon')
+        self.assertContains(response, 'Paid ₹499.00')
+
+        def matching(query):
+            return list(self.client.get('/store/dashboard/user-data/?' + query).context['users'])
+
+        self.assertEqual(matching('active=never_chatted'), [idle])
+        self.assertEqual(matching('active=inactive'), [idle])
+        self.assertEqual(matching('active=week'), [self.customer])
+        self.assertEqual(matching('phone=verified'), [idle])
+        self.assertEqual(matching('phone=none'), [self.customer])
+        self.assertEqual(matching('subscription=expiring'), [idle])
+        self.assertEqual(matching('subscription=paid'), [idle])
+        self.assertEqual(matching('q=9999999999'), [idle])
+        self.assertEqual(matching('sort=most_messages')[0], self.customer)
+        self.assertContains(self.client.get('/store/dashboard/user-data/?phone=verified'), 'Clear filters')
 
     def test_user_data_search_matches_location(self):
         other = User.objects.create_user(
@@ -3238,7 +3380,7 @@ class AIAccountProfileTests(TestCase):
         self.assertContains(response, 'data-account-panel="subscription"')
         self.assertContains(response, 'Connected devices')
         self.assertContains(response, 'My reports')
-        self.assertNotContains(response, '> Admin Panel</a>')
+        self.assertNotContains(response, '<span class="acct-label">Admin Panel</span></a>')
 
     def test_superuser_profile_dropdown_contains_admin_panel(self):
         superuser = User.objects.create_superuser(
@@ -3248,7 +3390,7 @@ class AIAccountProfileTests(TestCase):
 
         response = self.client.get('/')
 
-        self.assertContains(response, '> Admin Panel</a>')
+        self.assertContains(response, '<span class="acct-label">Admin Panel</span></a>')
         self.assertContains(response, 'href="/store/dashboard/"')
         self.assertNotContains(response, 'Back to site')
 
@@ -3933,7 +4075,7 @@ class AIDashboardOverviewTests(TestCase):
     def test_sidebar_keeps_payments_and_the_ai_pwa_backup_options(self):
         response = self.client.get('/store/dashboard/')
 
-        for label in ('Overview', 'Signups', 'AI Management', 'AI Activity', 'AI Reports', 'Payments', 'PWA / Install App', 'Backup &amp; Restore'):
+        for label in ('Overview', 'Signups', 'Add User', 'AI Activity', 'AI Reports', 'Payments', 'PWA / Install App', 'Backup &amp; Restore'):
             self.assertContains(response, label)
         self.assertContains(response, 'href="/" class="dash-logo"')
         self.assertNotContains(response, 'Back to store')
@@ -4178,7 +4320,7 @@ class PWAFrontendSettingsTests(TestCase):
         self.assertContains(homepage, '/AI/pwa-icon/192.png?v=')
         self.assertContains(homepage, "navigator.serviceWorker.register('/sw.js', { scope: '/' })")
         self.assertContains(homepage, 'id="installAppMenuBtn"')
-        self.assertContains(homepage, '<i class="fas fa-mobile-screen-button"></i> Install app', html=True)
+        self.assertContains(homepage, '<span class="acct-ico"><i class="fas fa-mobile-screen-button"></i></span><span class="acct-label">Install app</span>', html=True)
 
         manifest_response = self.client.get('/AI/manifest.json')
         manifest = manifest_response.json()
@@ -4315,6 +4457,109 @@ class PWAFrontendSettingsTests(TestCase):
         self.assertNotContains(homepage, 'id="installAppMenuBtn"')
         self.assertNotContains(homepage, "navigator.serviceWorker.register('/sw.js'")
         self.assertContains(homepage, 'navigator.serviceWorker.getRegistrations()')
+
+
+class SupportHoursAndRenamedPagesTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username='hours-admin', email='hours@example.com', password='pw')
+        StoreProfile.objects.create(user=self.admin, ai_onboarded=True)
+        self.client.force_login(self.admin)
+
+    def test_support_hours_default_show_in_the_contact_popup_with_a_call_option(self):
+        page = self.client.get('/')
+        self.assertContains(page, 'Mon–Fri, 10 AM – 7 PM')
+        self.assertContains(page, 'Call support')
+        self.assertContains(page, 'href="tel:+91')
+
+    def test_support_hours_are_saved_on_customize_and_can_be_hidden(self):
+        current = SiteCustomization.get_solo()
+        saved = self.client.post('/store/dashboard/customize/', {
+            'ai_brand_name': current.ai_brand_name or 'Vidhyora',
+            'social_preview_title': current.social_preview_title,
+            'social_preview_description': current.social_preview_description,
+            'support_whatsapp_number': '7607845679', 'support_email': 'support@vidhyantra.shop',
+            'support_hours': '  Mon–Sat, 9 AM – 6 PM ',
+        })
+        self.assertEqual(saved.status_code, 200)
+        self.assertTrue(saved.context['saved'], saved.context['form'].errors)
+        self.assertEqual(SiteCustomization.get_solo().support_hours, 'Mon–Sat, 9 AM – 6 PM')
+        self.assertContains(self.client.get('/'), 'Mon–Sat, 9 AM – 6 PM')
+        SiteCustomization.objects.update(support_hours='')
+        self.assertNotContains(self.client.get('/'), 'class="support-hours"')
+
+    def test_sidebar_uses_the_new_names(self):
+        page = self.client.get('/store/dashboard/')
+        for label in ('Add User', 'Code-X', 'AI Models Management'):
+            self.assertContains(page, label)
+        for old in ('> AI Management<', '> OpenCode Data<', '> API Settings<'):
+            self.assertNotContains(page, old)
+
+
+class AccountMenuPlanBadgeTests(TestCase):
+    """The profile card at the top of the account menu shows the plan."""
+
+    def badge_for(self, user):
+        self.client.force_login(user)
+        return self.client.get('/')
+
+    def test_free_user_sees_upgrade(self):
+        user = User.objects.create_user('free-one', email='free@example.com', first_name='Free', password='pw')
+        StoreProfile.objects.create(user=user, ai_onboarded=True)
+        page = self.badge_for(user)
+        self.assertContains(page, 'class="acct-plan is-free"')
+        self.assertContains(page, 'id="headerMenuName">Free</span>')
+
+    def test_subscriber_sees_premium(self):
+        user = User.objects.create_user('paid-one', email='paid@example.com', password='pw')
+        StoreProfile.objects.create(user=user, ai_onboarded=True, ai_subscription_until=timezone.now() + timedelta(days=30))
+        self.assertContains(self.badge_for(user), 'class="acct-plan is-premium"')
+
+    def test_staff_sees_admin_and_the_admin_row(self):
+        admin = User.objects.create_superuser('boss-one', email='boss1@example.com', password='pw')
+        StoreProfile.objects.create(user=admin, ai_onboarded=True)
+        page = self.badge_for(admin)
+        self.assertContains(page, 'class="acct-plan is-admin"')
+        self.assertContains(page, 'class="acct-menu-admin"')
+
+
+class DashboardBackupFolderBrowserTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username='folders-admin', email='f@example.com', password='pw')
+        StoreProfile.objects.create(user=self.admin)
+        self.client.force_login(self.admin)
+
+    def test_lists_top_level_folders_marking_the_current_and_unusable_ones(self):
+        import dropbox
+
+        class FakeDropbox:
+            def files_list_folder(self, path):
+                entries = [
+                    dropbox.files.FolderMetadata(name=name, id=f'id:{name}', path_lower=f'/{name.lower()}')
+                    for name in ('Vidhyantra', 'Old-Site', 'EduTrellis Store')
+                ] + [dropbox.files.FileMetadata(name='notes.txt', id='id:n', path_lower='/notes.txt',
+                                                client_modified=timezone.now().replace(tzinfo=None),
+                                                server_modified=timezone.now().replace(tzinfo=None), rev='a1b2c3d4e', size=1)]
+                return type('R', (), {'entries': entries, 'has_more': False})()
+
+        with patch('myapp.dropbox_backup._client', return_value=FakeDropbox()), \
+                patch('myapp.dropbox_layout.root', return_value='/Vidhyantra'):
+            body = self.client.get('/store/dashboard/backup/folders/').json()
+        self.assertEqual([f['name'] for f in body['folders']], ['Vidhyantra', 'EduTrellis Store', 'Old-Site'])
+        self.assertTrue(body['folders'][0]['current'])
+        self.assertFalse(body['folders'][1]['usable'])  # a space: the site would use a different folder
+        self.assertTrue(body['folders'][2]['usable'])
+
+    def test_not_connected_is_a_plain_message(self):
+        from myapp.dropbox_backup import BackupError
+        with patch('myapp.dropbox_backup._client', side_effect=BackupError('Dropbox is not connected yet.')):
+            response = self.client.get('/store/dashboard/backup/folders/')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('not connected', response.json()['detail'])
+
+    def test_members_cannot_list_folders(self):
+        member = User.objects.create_user('member-x', password='pw')
+        self.client.force_login(member)
+        self.assertEqual(self.client.get('/store/dashboard/backup/folders/').status_code, 302)
 
 
 class DashboardBackupDeletionTests(TestCase):
@@ -4741,7 +4986,7 @@ class ApiSettingsPanelsTests(TestCase):
         response = self.client.get(self.URL)
         self.assertEqual(
             [p['id'] for p in response.context['panels']],
-            ['chat', 'luna', 'sol', 'terra', 'coding', 'image', 'search'],
+            ['chat', 'luna', 'sol', 'terra', 'coding', 'image', 'search', 'coderun'],
         )
 
     @patch('myapp.ai_chat._client_for_key')
@@ -6510,7 +6755,7 @@ class ApiDataMatchesApiSettingsTests(TestCase):
         self.assertNotIn('Search API name', body)
         self.assertNotIn('api-card', body)
         self.assertNotIn('apis', response.context)
-        self.assertContains(response, 'API Settings page')
+        self.assertContains(response, 'AI Models Management page')
 
     def test_the_page_no_longer_accepts_key_changes(self):
         self.client.post(self.URL, {'NVIDIA_API_KEY': 'should-not-be-saved'})
@@ -6989,7 +7234,7 @@ class OpenCodeDashboardTests(TestCase):
         self.assertEqual(response.context['stats']['requests_total'], 2)
 
     def test_it_is_in_the_admin_menu(self):
-        self.assertContains(self.client.get('/store/dashboard/'), 'OpenCode Data')
+        self.assertContains(self.client.get('/store/dashboard/'), 'Code-X')
 
     def test_search_and_filters(self):
         rows = lambda **q: [r['user'].username for r in self.client.get('/store/dashboard/opencode/', q).context['rows']]
