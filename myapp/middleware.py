@@ -1,9 +1,11 @@
 import logging
+import time
 import traceback
 
 from django.conf import settings
 from django.core.exceptions import MiddlewareNotUsed
 from django.http import Http404, HttpResponse, HttpResponsePermanentRedirect, JsonResponse
+from django.middleware.gzip import GZipMiddleware
 from django.shortcuts import render
 
 from .devices import register_device, touch_device
@@ -219,8 +221,40 @@ class PublicAssetCacheMiddleware:
         if response.status_code == 200:
             if request.path.startswith('/static/'):
                 response['Cache-Control'] = 'public, max-age=86400, stale-while-revalidate=604800'
-            elif request.path.startswith((
-                '/media/products/', '/media/categories/', '/media/about/', '/media/pwa/',
-            )):
+            elif request.path.startswith('/media/pwa/'):
                 response['Cache-Control'] = 'public, max-age=604800, stale-while-revalidate=2592000'
+        return response
+
+
+class CompressResponseMiddleware(GZipMiddleware):
+    """Gzips pages and JSON for browsers that accept it: the AI page alone is
+    about 900 KB of HTML and well under 200 KB gzipped. Streaming responses
+    (the AI's live replies, file downloads) pass through untouched, so every
+    chunk still reaches the browser the moment it is written. First in
+    MIDDLEWARE, so it compresses what the other middleware finished with."""
+
+    def process_response(self, request, response):
+        if response.streaming:
+            return response
+        return super().process_response(request, response)
+
+
+class SessionRefreshMiddleware:
+    """Keeps a signed-in session's one-year expiry sliding forward while saving
+    it at most once a day. It replaces SESSION_SAVE_EVERY_REQUEST, which wrote
+    the session row to the database on every page load and every API call.
+    Sessions that change are still saved straight away, as always."""
+
+    REFRESH_SECONDS = 24 * 60 * 60
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        session = getattr(request, 'session', None)
+        if session is not None and session.session_key and not session.is_empty():
+            now = int(time.time())
+            if now - int(session.get('_refreshed_at') or 0) >= self.REFRESH_SECONDS:
+                session['_refreshed_at'] = now   # marks it changed, so SessionMiddleware saves it
         return response

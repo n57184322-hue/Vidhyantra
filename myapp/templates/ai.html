@@ -968,29 +968,53 @@ header{background:var(--header-bg);backdrop-filter:blur(8px);border-bottom:1px s
 .account-ghost-btn,.account-danger-btn{border-radius:12px}
 .theme-combination,.font-combination,.skin-card,.bg-anim-card{transition:border-color .15s,transform .15s,box-shadow .15s}
 .theme-combination:hover,.font-combination:hover{transform:translateY(-1px)}
+.account-upload-short{display:none}
+/* Tablets: the same side menu, just slimmer, with less padding and a shorter subtitle. */
+@media (min-width:761px) and (max-width:1024px){
+  .account-modal{height:min(680px,calc(100dvh - 48px))}
+  .account-modal:not([hidden]){grid-template-columns:196px minmax(0,1fr)}
+  .account-modal-head{padding:.8rem 1rem}
+  .account-sub-extra{display:none}
+  .account-tabs{padding:.6rem .5rem}
+  .account-tab{gap:.55rem;padding:.42rem .5rem;font-size:.78rem}
+  .account-tab i{width:26px;height:26px}
+  .account-content{padding:1.05rem 1.2rem 1.3rem}
+  .account-profile-row{padding:.85rem 1rem;margin-bottom:1rem}
+  .account-avatar-preview{width:68px;height:68px;font-size:1.35rem}
+  .account-divider{margin:1.2rem 0}
+}
 @media (max-width:760px){
-  /* A floating card with a gap on every side, so its edges never touch the screen. */
-  .account-modal{top:auto;bottom:12px;left:12px;right:12px;transform:none;width:auto;height:calc(100vh - 84px);height:calc(100dvh - 84px);max-height:680px;border-radius:20px;box-shadow:0 18px 50px rgba(0,0,0,.45)}
+  /* Centred with an even gap above and below (not pinned to the bottom edge),
+     and never taller than the screen, so it sits clear of the phone's nav bar. */
+  .account-modal{top:max(10px,env(safe-area-inset-top));bottom:max(10px,env(safe-area-inset-bottom));left:10px;right:10px;margin:auto 0;transform:none;width:auto;height:calc(100vh - 20px);height:min(640px,calc(100dvh - 20px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));max-height:none;border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.45)}
   .account-modal:not([hidden]){grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr)}
-  .account-modal-head{gap:.6rem;padding:.65rem .75rem .65rem .85rem}
-  .account-modal-heading{gap:.6rem}
-  .account-modal-icon{width:30px;height:30px;border-radius:9px;font-size:.8rem;box-shadow:none}
-  .account-modal-title{font-size:.95rem}
-  .account-modal-sub{font-size:.66rem}
-  .account-modal-close{width:32px;height:32px;border-radius:9px}
-  .account-tabs{flex-direction:row;gap:.3rem;padding:.45rem .6rem;border-right:none;border-bottom:1px solid var(--line);overflow-x:auto;overflow-y:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 10px,#000 calc(100% - 10px),transparent);mask-image:linear-gradient(90deg,transparent,#000 10px,#000 calc(100% - 10px),transparent)}
-  .account-tab{width:auto;flex:none;gap:.35rem;padding:.25rem .6rem .25rem .25rem;border:1px solid var(--line);border-radius:99px;background:var(--surface);font-size:.72rem}
-  .account-tab i{width:22px;height:22px;border-radius:50%;font-size:.62rem}
+  .account-modal-head{gap:.5rem;padding:.55rem .6rem .55rem .75rem}
+  .account-modal-heading{gap:.5rem}
+  .account-modal-icon{width:26px;height:26px;border-radius:8px;font-size:.72rem;box-shadow:none}
+  .account-modal-title{font-size:.9rem}
+  .account-modal-sub{margin:0;font-size:.64rem}
+  .account-sub-extra{display:none}
+  .account-modal-close{width:30px;height:30px;border-radius:8px}
+  .account-tabs{flex-direction:row;gap:.28rem;padding:.4rem .55rem;border-right:none;border-bottom:1px solid var(--line);overflow-x:auto;overflow-y:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 10px,#000 calc(100% - 10px),transparent);mask-image:linear-gradient(90deg,transparent,#000 10px,#000 calc(100% - 10px),transparent)}
+  .account-tab{width:auto;flex:none;gap:.3rem;padding:.2rem .55rem .2rem .2rem;border:1px solid var(--line);border-radius:99px;background:var(--surface);font-size:.7rem}
+  .account-tab i{width:20px;height:20px;border-radius:50%;font-size:.58rem}
   .account-tab.active{box-shadow:none;border-color:rgba(var(--accent-rgb),.6);background:var(--tint);color:var(--red)}
-  .account-content{padding:.85rem .85rem 1.2rem}
-  .account-profile-row{gap:.8rem;padding:.75rem;margin-bottom:.9rem;border-radius:14px}
-  .account-avatar-preview{width:56px;height:56px;font-size:1.2rem;box-shadow:0 0 0 3px var(--surface),0 0 0 5px rgba(var(--accent-rgb),.55)}
-  .account-upload-label{padding:.42rem .75rem;font-size:.74rem}
-  .account-form-grid{gap:.6rem}
-  .account-field label{font-size:.68rem}
-  .account-field input,.account-field select,.account-field textarea{padding:.55rem .7rem;border-radius:10px}
-  .account-divider{margin:1.1rem 0}
-  #accountPasswordForm{padding:.8rem}
+  .account-content{padding:.7rem .75rem 1rem}
+  .account-section-title{font-size:.86rem;margin-bottom:.6rem}
+  .account-profile-row{gap:.7rem;padding:.6rem .7rem;margin-bottom:.75rem;border-radius:14px}
+  .account-avatar-preview{width:46px;height:46px;font-size:1.05rem;box-shadow:0 0 0 2px var(--surface),0 0 0 4px rgba(var(--accent-rgb),.55)}
+  .account-upload-label{padding:.36rem .7rem;font-size:.72rem}
+  .account-upload-long{display:none}
+  .account-upload-short{display:inline}
+  .account-help{font-size:.64rem;margin-top:.25rem}
+  .account-form-grid{gap:.5rem}
+  .account-field{gap:.22rem}
+  .account-field label{font-size:.66rem}
+  .account-field input,.account-field select,.account-field textarea{padding:.5rem .65rem;border-radius:10px}
+  .account-form-actions{margin-top:.7rem}
+  .account-save-btn,.account-plan-btn{padding:.55rem 1rem;font-size:.78rem;box-shadow:0 5px 12px rgba(var(--accent-rgb),.22)}
+  .account-divider{margin:.95rem 0}
+  #accountPasswordForm{padding:.7rem}
 }
 @media (prefers-reduced-motion:reduce){.account-panel:not([hidden]){animation:none}}
 .theme-combination-intro{font-size:.78rem;line-height:1.5;color:var(--text);margin:0 0 .85rem}
@@ -1815,9 +1839,17 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
 /* One line high; longer text scrolls inside it, with no scrollbar or arrows.
    The space around the line is margin, not padding, so a scrolled box shows
    exactly one whole line instead of the bottom half of the line before it. */
-#chatInput{order:-1;flex:1 1 100%;min-width:0;width:100%;border:none;background:none;resize:none;font-family:inherit;font-size:.92rem;color:var(--head);line-height:1.5;padding:0 .2rem;margin:.4rem 0 .35rem;transition:height .12s ease;height:1.5em!important;max-height:1.5em!important;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none}
+#chatInput{order:-1;flex:1 1 100%;min-width:0;width:100%;border:none;background:none;resize:none;font-family:inherit;font-size:.92rem;color:var(--head);line-height:1.5;padding:0 .2rem;margin:.4rem 0 .35rem;transition:height .22s ease;height:var(--ci-h,1.5em)!important;max-height:var(--ci-h,1.5em)!important;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none}
 #chatInput::-webkit-scrollbar{display:none;width:0;height:0}
 #chatInput:focus{outline:none}
+/* Small grey × at the end of the text line while there is text: clears it all at once. */
+.input-wrap{position:relative}
+.input-wrap.has-text #chatInput{padding-right:1.7rem}
+.chat-clear-btn{position:absolute;top:.95rem;right:.7rem;z-index:1;width:20px;height:20px;border:none;border-radius:50%;background:color-mix(in srgb,var(--text) 22%,transparent);color:var(--surface);font-size:.62rem;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;opacity:.85;transition:opacity .15s,background .15s,transform .1s}
+.chat-clear-btn[hidden]{display:none}
+.chat-clear-btn:hover{opacity:1;background:color-mix(in srgb,var(--text) 38%,transparent)}
+.chat-clear-btn:active{transform:scale(.9)}
+@media(max-width:640px){.chat-clear-btn{top:.85rem;right:.6rem;width:22px;height:22px}}
 #sendBtn{margin-left:auto}
 .input-wrap>.model-picker-wrap,.input-wrap>.github-wrap,.input-wrap>.mic-btn,.input-wrap>.search-btn,.input-wrap>#sendBtn{flex:0 0 auto}
 #sendBtn{border:none;cursor:pointer;background:linear-gradient(135deg,var(--red),var(--red-dark));color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .2s,transform .1s}
@@ -2631,13 +2663,17 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   .model-dropdown{position:fixed;top:50%;left:24px;right:24px;bottom:auto;transform:translateY(-50%);width:auto;max-width:340px;margin:0 auto;min-width:0;max-height:min(65vh,420px);max-height:min(65dvh,420px);overscroll-behavior:contain;z-index:47}
   /* No labels fit on a phone (see fitComposer), so spread the icons across
      the toolbar row instead of leaving a gap before the send button. */
-  .input-wrap{gap:.3rem;justify-content:space-between}
+  .input-wrap{gap:.2rem;justify-content:space-between}
   #sendBtn{margin-left:0}
   .mic-btn,.github-btn,.search-btn{width:30px;height:30px;font-size:.85rem}
-  /* a lower cap than desktop's 140px — on a short phone screen, letting the
-     composer grow that tall ate too much of the visible chat area and felt
-     like the bar was taking over the screen as you typed */
-  #chatInput{max-height:96px}
+  /* The tool icons may shrink a little (basis 0, up to 30px) so a narrow phone
+     squeezes them instead of pushing the send button onto a row of its own. */
+  .input-wrap>.mic-btn,.input-wrap>.search-btn,.input-wrap>.research-btn{flex:1 1 0;min-width:26px;max-width:30px}
+}
+@media (max-width:360px){
+  .input-wrap{gap:.12rem;padding-left:.6rem;padding-right:.45rem}
+  .input-wrap>.mic-btn,.input-wrap>.search-btn,.input-wrap>.research-btn{min-width:22px;font-size:.8rem}
+  .composer-sep{display:none}
 }
 @media (max-width:360px){
   .model-picker-btn{padding:0 .4rem}
@@ -4058,7 +4094,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
   <div class="account-modal-head">
     <div class="account-modal-heading">
       <span class="account-modal-icon" aria-hidden="true"><i class="fas fa-user-gear"></i></span>
-      <div><h2 class="account-modal-title" id="accountModalTitle">My account</h2><p class="account-modal-sub">{% if ai_user %}{{ ai_user.email }} · {% endif %}Profile, looks and your saved data</p></div>
+      <div><h2 class="account-modal-title" id="accountModalTitle">My account</h2><p class="account-modal-sub">{% if ai_user %}{{ ai_user.email }}<span class="account-sub-extra"> · {% endif %}Profile, looks and your saved data{% if ai_user %}</span>{% endif %}</p></div>
     </div>
     <button type="button" class="account-modal-close" id="accountModalClose" aria-label="Close account settings"><i class="fas fa-xmark"></i></button>
   </div>
@@ -4081,7 +4117,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         <div class="account-profile-row">
           <div class="account-avatar-preview" id="accountAvatarPreview">{{ ai_user.name|slice:":1"|upper }}</div>
           <div>
-            <label class="account-upload-label" for="accountAvatarInput"><i class="fas fa-camera"></i> Upload profile image</label>
+            <label class="account-upload-label" for="accountAvatarInput"><i class="fas fa-camera"></i> <span class="account-upload-long">Upload profile image</span><span class="account-upload-short">Change photo</span></label>
             <input type="file" id="accountAvatarInput" name="avatar" accept="image/png,image/jpeg,image/webp" hidden>
             <p class="account-help">PNG, JPEG, or WebP, up to 5 MB.</p>
           </div>
@@ -4886,6 +4922,7 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
         <button type="button" id="micBtn" class="mic-btn" aria-label="Voice typing" title="Speak your message"><i class="fas fa-microphone"></i><span class="tool-label">Voice</span></button>
         <button type="button" id="callBtn" class="mic-btn" aria-label="Start a voice call" title="Talk with AI on a voice call"><i class="fas fa-phone"></i><span class="tool-label">Call</span></button>
         <textarea id="chatInput" rows="1" placeholder="Message AI" aria-label="Message AI" maxlength="16000"></textarea>
+        <button type="button" class="chat-clear-btn" id="chatClearBtn" aria-label="Clear message" title="Clear" hidden><i class="fas fa-xmark"></i></button>
         <span class="send-hint" aria-hidden="true"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span>
         <button type="button" id="sendBtn" aria-label="Send"><span class="send-label">Send</span><i class="fas fa-arrow-up"></i></button>
       </div>
@@ -5709,11 +5746,55 @@ footer{flex:none;border-top:1px solid var(--line);background:var(--surface);padd
     return report ? polishReport(result) : result;
   }
 
+  // Desktop: the box keeps the height of one line and scrolls once the text is
+  // longer. Phones: it grows gently with the text, up to about 7 lines (never
+  // more than 38% of the screen), so a long message stays readable, then scrolls.
+  var chatClearBtn = document.getElementById('chatClearBtn');
+  var phoneComposer = window.matchMedia ? window.matchMedia('(max-width:640px)') : null;
   function autoResize(){
-    // The box keeps the height of one line and scrolls once the text is longer.
     input.style.height = '';
+    var hasText = input.value.length > 0;
+    if (chatClearBtn) chatClearBtn.hidden = !hasText;
+    if (inputWrap) inputWrap.classList.toggle('has-text', hasText);
+    if (!(phoneComposer && phoneComposer.matches) || !hasText) {
+      input.style.removeProperty('--ci-h');
+      return;
+    }
+    // measure the text's full height without animating the measuring step
+    var before = input.style.getPropertyValue('--ci-h');
+    input.style.transition = 'none';
+    input.style.setProperty('--ci-h', '0px');
+    var needed = input.scrollHeight;
+    if (before) input.style.setProperty('--ci-h', before); else input.style.removeProperty('--ci-h');
+    void input.offsetHeight;
+    input.style.transition = '';
+    var line = parseFloat(getComputedStyle(input).lineHeight) || 24;
+    var cap = Math.max(line, Math.min(line * 7, window.innerHeight * 0.38));
+    input.style.setProperty('--ci-h', Math.max(line, Math.min(needed, cap)) + 'px');
   }
   input.addEventListener('input', autoResize);
+  // Many features fill the box from code (voice typing, suggestions, editing a
+  // message, sending clears it), so the clear button and height follow every
+  // change of the value, not only typing.
+  (function(){
+    var desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    if (!desc || !desc.set) return;
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get: function(){ return desc.get.call(this); },
+      set: function(v){ desc.set.call(this, v); autoResize(); }
+    });
+  })();
+  if (chatClearBtn) chatClearBtn.addEventListener('click', function(){
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  });
+  if (phoneComposer) {
+    if (phoneComposer.addEventListener) phoneComposer.addEventListener('change', autoResize);
+    else if (phoneComposer.addListener) phoneComposer.addListener(autoResize);
+  }
+  window.addEventListener('resize', function(){ if (input.value) autoResize(); });
 
   function scrollToBottom(){
     main.scrollTop = main.scrollHeight;

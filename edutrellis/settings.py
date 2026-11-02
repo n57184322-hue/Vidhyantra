@@ -59,6 +59,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'myapp.middleware.CompressResponseMiddleware',
     'myapp.middleware.FriendlyErrorMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'myapp.middleware.AutoBackupMiddleware',
@@ -68,6 +69,7 @@ MIDDLEWARE = [
     'myapp.middleware.PublicAssetCacheMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'myapp.middleware.SessionRefreshMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -103,6 +105,9 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        # Several requests can write at once (4+ server threads): wait up to 20 s
+        # for another write to finish instead of failing with "database is locked".
+        'OPTIONS': {'timeout': 20},
     }
 }
 
@@ -130,7 +135,9 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 SESSION_COOKIE_AGE = 60 * 60 * 24 * 365
-SESSION_SAVE_EVERY_REQUEST = True
+# The one-year expiry still slides forward, but the session is re-saved at most
+# once a day (myapp.middleware.SessionRefreshMiddleware), not on every request.
+SESSION_SAVE_EVERY_REQUEST = False
 
 GITHUB_OAUTH_CLIENT_ID = os.environ.get('GITHUB_OAUTH_CLIENT_ID', '')
 GITHUB_OAUTH_CLIENT_SECRET = os.environ.get('GITHUB_OAUTH_CLIENT_SECRET', '')
